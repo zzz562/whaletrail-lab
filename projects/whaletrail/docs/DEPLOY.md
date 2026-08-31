@@ -158,3 +158,21 @@ nc -vz -w3 127.0.0.1 22          # 回环 TCP 也拒连 = 系统级过滤
 nc -vz -u -w3 10.252.20.1 53     # UDP 正常 = TCP 专属过滤器
 systemextensionsctl list         # 看激活的 Network Extension
 ```
+
+## 已知事故：Clash Party helper 恶意软件弹窗
+
+**症状**（2026-08-31）：macOS 反复弹「已阻止恶意软件 / party ape helper」，关不掉。
+
+**根因**：Clash Party（`/Applications/Clash Party.app`，mihomo 内核）TUN 模式需要特权 helper。`party.ape.helper` 被 Gatekeeper 拦截无法加载，应用反复重试 → 弹窗循环。`party.mihomo.helper`（系统代理/DNS）未被拦，正常运行；HTTP 代理 7890 是用户态 sidecar，**不依赖任何 helper**。
+
+**处置**（已执行）：
+```bash
+# 1) 关 TUN（配置 ~/Library/Application Support/mihomo-party/mihomo.yaml）
+#    tun.enable: true -> false（应用重启后 utun1500 消失，顺带消除路由劫持）
+# 2) 删被拦的 helper（应用包里无副本，不会重建）
+sudo launchctl bootout system/party.ape.helper
+sudo rm -f /Library/LaunchDaemons/party.ape.helper.plist /Library/PrivilegedHelperTools/party.ape.helper
+# 3) 重启应用：open -a "Clash Party"
+```
+
+**保留项**：`party.mihomo.helper`（系统代理/DNS）、7890 代理（Telegram、脚本依赖）。验证：`curl -x http://127.0.0.1:7890 https://www.google.com` 应 200；Telegram 正常收发。
