@@ -44,6 +44,24 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | `ai.openclaw.gateway` | OpenClaw AI Agent 网关 |
 | `homebrew.mxcl.ollama` | 本地 LLM（qwen3:4b） |
 | `com.zeph.reverse-tunnel` | SSH 反向隧道 → VPS |
+| `com.zeph.wifi-watchdog` | Wi-Fi 自检 + 隧道自愈（每 3 分钟） |
+
+## Wi-Fi 看门狗
+
+保持 mini 的 `BZL-IoT` Wi-Fi 在线，并在公网可达后确保反向隧道存活（脚本 `scripts/mini-wifi-watchdog.sh`，plist 模板 `scripts/com.zeph.wifi-watchdog.plist`）。
+
+```bash
+# 首次部署（mini 上，仓库已 pull 后）
+mkdir -p ~/.config && chmod 700 ~/.config
+# 若 BZL-IoT 需要密码：echo '<密码>' > ~/.config/wifi-bzl-iot.pw && chmod 600 ~/.config/wifi-bzl-iot.pw
+cp ~/Projects/whaletrail-lab/projects/whaletrail/scripts/com.zeph.wifi-watchdog.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.zeph.wifi-watchdog.plist
+# 验证
+launchctl list | grep wifi-watchdog
+tail -5 ~/Projects/whaletrail-lab/projects/whaletrail/logs/wifi-watchdog.log
+```
+
+行为：Wi-Fi 未关联 BZL-IoT 且无 IP/默认路由时重连（密码文件可选）；ping 通 VPS 但 TCP 拒连时写 `TCP_BLOCKED` 日志标记；隧道进程不在跑时按标准流程 bootout + load 重启。日志 `logs/wifi-watchdog.log`。
 
 ## Cron（OpenClaw）
 
@@ -109,4 +127,22 @@ ssh macmini 'export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 24 &&
 ```bash
 ssh aliyun-vps 'ss -tlnp | grep 2222'
 # 无输出 = mini 隧道断了，到 mini 上重启 reverse-tunnel
+```
+
+## 已知事故：Tailscale NE 卡死导致全系统 TCP 拒连
+
+**症状**：mini 所有 TCP 连接（含 `127.0.0.1` 回环）报 `Can't assign requested address`，UDP/ICMP 正常；Wi-Fi 关联状态异常（`networksetup -getairportnetwork` 报 not associated 但有 IP、链路 active）。
+
+**根因**（2026-08-31 定位）：Tailscale Network Extension（`io.tailscale.ipn.macsys.network-extension`，1.102.2）处于 `activated enabled` 但服务后端已死，内核级拦截全部 TCP。mihomo TUN 曾同时劫持流量（0/1 全路由到 utun1500），但非根因。
+
+**修复**（任一，需 mini 本地或 sudo）：
+- 系统设置 → 通用 → 登录项与扩展 → 网络扩展 → 关闭/移除 Tailscale（若 mini 不使用 Tailscale，推荐直接移除）
+- 重启 mini（NE 复位；若复发仍需移除）
+- `sudo systemextensionsctl reset`（重置所有系统扩展）
+
+**判别命令**（在 mini 上）：
+```bash
+nc -vz -w3 127.0.0.1 22          # 回环 TCP 也拒连 = 系统级过滤
+nc -vz -u -w3 10.252.20.1 53     # UDP 正常 = TCP 专属过滤器
+systemextensionsctl list         # 看激活的 Network Extension
 ```
