@@ -53,7 +53,7 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 ```bash
 # 首次部署（mini 上，仓库已 pull 后）
 mkdir -p ~/.config && chmod 700 ~/.config
-# 若 BZL-IoT 需要密码：echo '<密码>' > ~/.config/wifi-bzl-iot.pw && chmod 600 ~/.config/wifi-bzl-iot.pw
+# BZL-IoT 为开放网络（免密），无需密码文件
 cp ~/Projects/whaletrail-lab/projects/whaletrail/scripts/com.zeph.wifi-watchdog.plist ~/Library/LaunchAgents/
 launchctl load -w ~/Library/LaunchAgents/com.zeph.wifi-watchdog.plist
 # 验证
@@ -61,7 +61,7 @@ launchctl list | grep wifi-watchdog
 tail -5 ~/Projects/whaletrail-lab/projects/whaletrail/logs/wifi-watchdog.log
 ```
 
-行为：Wi-Fi 未关联 BZL-IoT 且无 IP/默认路由时重连（密码文件可选）；ping 通 VPS 但 TCP 拒连时写 `TCP_BLOCKED` 日志标记；隧道进程不在跑时按标准流程 bootout + load 重启。日志 `logs/wifi-watchdog.log`。
+行为：Wi-Fi 未关联 BZL-IoT 且无 IP/默认路由时重连（BZL-IoT 免密，直接尝试加入）；ping 通 VPS 但 TCP 拒连时写 `TCP_BLOCKED` 日志标记；隧道进程不在跑时按标准流程 bootout + load 重启。日志 `logs/wifi-watchdog.log`。
 
 ## Cron（OpenClaw）
 
@@ -139,6 +139,18 @@ ssh aliyun-vps 'ss -tlnp | grep 2222'
 - 系统设置 → 通用 → 登录项与扩展 → 网络扩展 → 关闭/移除 Tailscale（若 mini 不使用 Tailscale，推荐直接移除）
 - 重启 mini（NE 复位；若复发仍需移除）
 - `sudo systemextensionsctl reset`（重置所有系统扩展）
+
+**处置决定（2026-08-31）：Tailscale 全量移除，不再使用。** 待 mini 上线后执行：
+```bash
+# 1) 解除 TCP 拦截（关键一步）
+sudo systemextensionsctl uninstall W5364U7YZB io.tailscale.ipn.macsys.network-extension
+# 2) 退出并删除应用与残留
+osascript -e 'quit app "Tailscale"' 2>/dev/null; pkill -f Tailscale 2>/dev/null
+launchctl bootout gui/$(id -u)/io.tailscale.ipn.macsys.login-item-helper 2>/dev/null
+sudo rm -rf /Applications/Tailscale.app /Library/LaunchDaemons/io.tailscale.ipn.macsys*
+# 3) 验证 TCP 恢复
+nc -vz -w3 127.0.0.1 22 && nc -vz -w4 139.224.244.214 22
+```
 
 **判别命令**（在 mini 上）：
 ```bash
