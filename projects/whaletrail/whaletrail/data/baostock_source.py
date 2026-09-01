@@ -91,6 +91,23 @@ def _to_ohlcv(df: pd.DataFrame, keep_amount: bool = False) -> pd.DataFrame:
     return out
 
 
+def _result_frame(rs) -> pd.DataFrame:
+    """Collect all rows from a baostock ``ResultData`` (pandas >= 2.0 safe).
+
+    baostock 0.9.x's own ``ResultData.get_data()`` calls ``DataFrame.append``,
+    which was removed in pandas 2.0 and raises ``AttributeError``.  We replicate
+    its pagination with ``list.extend`` instead.
+    """
+    rows = list(rs.data)
+    if not rows:
+        return pd.DataFrame(columns=rs.fields)
+    rs.cur_row_num = len(rows)
+    while rs.error_code == "0" and rs.next():
+        rows.extend(rs.data)
+        rs.cur_row_num = len(rs.data)
+    return pd.DataFrame(rows, columns=rs.fields)
+
+
 class BaostockSource(DataSource):
     """Daily OHLCV for A-shares from baostock (tokenless)."""
 
@@ -137,25 +154,25 @@ class BaostockSource(DataSource):
     # ------------------------------------------------------------------
     #  Universe / bulk
     # ------------------------------------------------------------------
-    def list_universe(self, day: date | None = None) -> list[tuple[str, str]]:
-        """Return ``(code, name)`` for currently trading A-shares.
+    def list_universe(self) -> list[tuple[str, str]]:
+        """Return ``(code, name)`` for currently listed A-share stocks.
 
-        When *day* is omitted, baostock's own "latest trading day" default is
-        used — more robust than ``date.today()``, which can be a non-trading
-        day or a day whose universe is not published yet.
+        Uses baostock's ``query_stock_basic`` (``type=1`` 股票, ``status=1``
+        上市), which carries names and needs no trading-day argument.
         """
         self._ensure_login()
         bs = self._import()
-        day_str = day.strftime("%Y-%m-%d") if day else ""
-        rs = bs.query_all_stock(day=day_str)
+        rs = bs.query_stock_basic()
         if rs.error_code != "0":
-            raise RuntimeError(f"baostock query_all_stock failed: {rs.error_code} {rs.error_msg}")
-        out: list[tuple[str, str]] = []
-        while rs.next():
-            row = rs.get_row_data()  # [code, tradeStatus, code_name]
-            if row[1] == "1":  # 交易中
-                out.append((row[0], row[2]))
-        return out
+            raise RuntimeError(f"baostock query_stock_basic failed: {rs.error_code} {rs.error_msg}")
+        df = _result_frame(rs)
+        if df.empty:
+            return []
+        if "type" in df.columns:
+            df = df[df["type"] == "1"]
+        if "status" in df.columns:
+            df = df[df["status"] == "1"]
+        return list(zip(df["code"].astype(str).tolist(), df["code_name"].astype(str).tolist()))
 
     def fetch_daily(self, code: str, start: date, end: date) -> pd.DataFrame:
         """Fetch daily bars for one baostock ``code`` as an OHLCV DataFrame."""
@@ -172,10 +189,7 @@ class BaostockSource(DataSource):
         if rs.error_code != "0":
             logger.warning("baostock %s failed: %s %s", code, rs.error_code, rs.error_msg)
             return pd.DataFrame()
-        rows = []
-        while rs.next():
-            rows.append(rs.get_row_data())
-        if not rows:
+        df = _result_frame(rs)
+        if df.empty:
             return pd.DataFrame()
-        df = pd.DataFrame(rows, columns=_FIELDS.split(","))
         return _to_ohlcv(df, keep_amount=True)
