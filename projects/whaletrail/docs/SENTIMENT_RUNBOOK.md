@@ -1,7 +1,7 @@
 # WhaleTrail Sentiment — 情绪子项 Runbook
 
 > 跟庄情绪层：X API 拉黄金 KOL 推文 → Ollama 打分 → GSI 情绪指数  
-> 创建：2026-08-11 | 状态：Phase 1 ✅（独立运行，待融合）
+> 创建：2026-08-11 | 状态：**已暂停**（2026-09-01 停每日 X 扫描省 API 额度，待重设计）
 
 ---
 
@@ -97,6 +97,8 @@ openclaw cron add --name whaletrail-sentiment --cron "0 9 * * *" --tz Asia/Shang
   --command "cd ~/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python3 scripts/sentiment.py" \
   --channel telegram --to 5102138680 --announce
 ```
+
+> **2026-09-01 暂停**：`whaletrail-sentiment` 已在 OpenClaw 禁用（省 X API 额度，重设计后再开）。恢复：`openclaw cron enable 9321339b-60ea-4577-96aa-0cfabeb4ba42`。
 
 ### 重置状态（清空缓存）
 
