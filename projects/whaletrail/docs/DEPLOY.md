@@ -12,9 +12,11 @@ ssh macmini-remote # 强制走 VPS
 
 | 端点 | IP |
 |------|-----|
-| MacBook Thunderbolt | `169.254.66.46` |
-| Mac mini Thunderbolt | `169.254.230.133` |
+| MacBook Thunderbolt | link-local，会变 |
+| Mac mini Thunderbolt | link-local，会变；当前 `169.254.133.209`（旧 `169.254.230.133` 已失效） |
 | VPS 跳板 | `139.224.244.214:2222` |
+
+Thunderbolt 链路 IP 会在插拔/重启后漂移。`ssh macmini` 依赖 `~/.ssh/config` 的当前 HostName + ping 失败则走 VPS；日常排障优先 `ssh macmini-remote`。
 
 ## 代码部署
 
@@ -41,6 +43,7 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | Label | 用途 |
 |-------|------|
 | `ai.whaletrail-live` | paper trading 实时扫描（仅美股交易时段，周末/节假日自动跳过） |
+| `ai.whaletrail-dashboard` | Streamlit 看板 `:8766`（KeepAlive，重启自愈） |
 | `ai.openclaw.gateway` | OpenClaw AI Agent 网关 |
 | `homebrew.mxcl.ollama` | 本地 LLM（qwen3:4b） |
 | `com.zeph.reverse-tunnel` | SSH 反向隧道 → VPS |
@@ -176,3 +179,5 @@ sudo rm -f /Library/LaunchDaemons/party.ape.helper.plist /Library/PrivilegedHelp
 ```
 
 **保留项**：`party.mihomo.helper`（系统代理/DNS）、7890 代理（Telegram、脚本依赖）。验证：`curl -x http://127.0.0.1:7890 https://www.google.com` 应 200；Telegram 正常收发。
+
+**复发（2026-08-31）**：`mihomo.yaml` 里 `tun.enable` 又变回 `true`，`utun1500` 重新出现。Clash Party GUI 的 TUN 开关会覆盖 yaml。关掉后确认 `ifconfig utun1500` 不存在，且 7890 仍通。

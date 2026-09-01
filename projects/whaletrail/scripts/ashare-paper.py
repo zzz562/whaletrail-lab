@@ -62,6 +62,56 @@ LOT = 100                   # A股整手
 MIN_HISTORY = 61
 
 
+def save_state(state: dict) -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False, default=str))
+
+
+def _migrate_positions(state: dict) -> bool:
+    """Fill qty/entry_cost on LONG rows written before sizing was persisted.
+
+    Old state had ``side`` + ``entry_price`` only, so the daily line showed
+    ``持有 0 股``. Infer shares from the same ¥5万 / 100-share lot rule as
+    ``_try_buy``. Drop the row if we still cannot size it.
+    """
+    dirty = False
+    for sym, pos in list(state.get("positions", {}).items()):
+        if not isinstance(pos, dict) or pos.get("side") != "LONG":
+            continue
+        qty = pos.get("qty")
+        if qty is not None and float(qty) > 0:
+            if "entry_cost" not in pos:
+                entry = float(pos.get("entry_price") or 0)
+                pos["entry_cost"] = round(
+                    max(float(qty) * entry * COMMISSION_RATE, MIN_COMMISSION), 2
+                )
+                dirty = True
+            continue
+        entry = float(pos.get("entry_price") or 0)
+        if entry <= 0:
+            print(f"⚠️ drop ghost position {sym}: no qty and no entry_price")
+            state["positions"].pop(sym, None)
+            dirty = True
+            continue
+        inferred = int(PAPER_NOTIONAL / entry / LOT) * LOT
+        if inferred <= 0:
+            print(f"⚠️ drop ghost position {sym}: cannot size at {entry}")
+            state["positions"].pop(sym, None)
+            dirty = True
+            continue
+        pos["qty"] = inferred
+        pos.setdefault(
+            "entry_cost",
+            round(max(inferred * entry * COMMISSION_RATE, MIN_COMMISSION), 2),
+        )
+        print(
+            f"⚠️ migrated {sym}: inferred qty={inferred} "
+            f"from ¥{PAPER_NOTIONAL:.0f} / {entry}"
+        )
+        dirty = True
+    return dirty
+
+
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
@@ -69,15 +119,12 @@ def load_state() -> dict:
             state.setdefault("positions", {})
             state.setdefault("pending", {})
             state.setdefault("trades", [])
+            if _migrate_positions(state):
+                save_state(state)
             return state
         except Exception:
             pass
     return {"positions": {}, "pending": {}, "trades": []}
-
-
-def save_state(state: dict) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False, default=str))
 
 
 def limit_pct(tv_symbol: str) -> float:
@@ -265,6 +312,8 @@ def main() -> None:
     args = parser.parse_args()
 
     today = datetime.now(CN_TZ).date()
+    # Heal old state even when the session gate skips (qty-less LONG rows).
+    state = load_state()
     if not ashare_hours():
         print(
             f"⏸ 非 A 股交易时段（盘外），跳过 | 当前 "
@@ -285,7 +334,6 @@ def main() -> None:
         return
 
     repo = Repository(DB_PATH)
-    state = load_state()
 
     print(f"\n🅰  A股低频 paper  |  {date.today().isoformat()}  "
           f"（信号=昨收 · 成交=今收 · 含费用）")

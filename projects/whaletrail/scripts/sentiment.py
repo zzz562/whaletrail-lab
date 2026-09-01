@@ -60,15 +60,20 @@ SCORING_PROMPT = (
 )
 
 
+# Transport / HTTP failures for the current scan. Cleared at scan() start.
+_x_errors: list[str] = []
+
+
 # ── X API helpers ────────────────────────────────────────────────
 def x_get(path: str) -> dict:
-    """Make an X API v2 GET request."""
+    """Make an X API v2 GET request. Empty dict on failure; records _x_errors."""
     url = f"https://api.x.com{path}"
     req = Request(url, headers={"Authorization": f"Bearer {BEARER_TOKEN}"})
     try:
         with urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
     except Exception as e:
+        _x_errors.append(str(e))
         print(f"  ⚠️ X API error: {e}")
         return {}
 
@@ -221,6 +226,8 @@ def score_items(items: list[dict]) -> list[dict]:
 # ── Main ─────────────────────────────────────────────────────────
 def scan(args) -> dict:
     """Scan gold KOLs and return sentiment report."""
+    _x_errors.clear()
+
     # Load state
     state = {}
     if STATE_FILE.exists():
@@ -282,6 +289,7 @@ def scan(args) -> dict:
     total = sum(scores.values())
     gsi = round((scores["bullish"] - scores["bearish"]) / max(total, 1), 3)
 
+    fetch_failed = bool(_x_errors) and total == 0
     report = {
         "date": today,
         "gold_sentiment_index": gsi,
@@ -291,21 +299,32 @@ def scan(args) -> dict:
         "total_scored": total,
         "entries": entries,
         "scanned_kols": len(kols),
+        "fetch_errors": len(_x_errors),
+        "fetch_failed": fetch_failed,
     }
 
-    # Save
-    out_file = RESULTS_DIR / f"sentiment_{today}.json"
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out_file = RESULTS_DIR / f"sentiment_{today}.json"
     out_file.write_text(json.dumps(report, indent=2, ensure_ascii=False))
 
-    # Update state
+    if fetch_failed:
+        print(
+            f"\n⚠️ X API failed for this run ({len(_x_errors)} errors, 0 scored). "
+            "Not replacing sentiment_latest.json."
+        )
+        return report
+
     state["user_cache"] = user_cache
     state["seen_tweets"] = list(seen_tweets)[-5000:]  # keep last 5000
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
-    # Also write latest
-    latest = RESULTS_DIR / "sentiment_latest.json"
-    latest.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    # Only promote latest when we actually scored tweets. A quiet day
+    # (0 new tweets, no transport errors) must not flash GSI to 0.
+    if total > 0:
+        latest = RESULTS_DIR / "sentiment_latest.json"
+        latest.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print("   no new tweets scored; leaving sentiment_latest.json unchanged")
 
     return report
 
@@ -333,6 +352,8 @@ def main():
           f"Bearish: {report['bearish_count']}  "
           f"Neutral: {report['neutral_count']}")
     print(f"  Saved: results/sentiment_{report['date']}.json")
+    if report.get("fetch_failed"):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

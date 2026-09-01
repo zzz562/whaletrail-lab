@@ -205,6 +205,88 @@ class Repository:
         return row[0] if row and row[0] else None
 
     # ------------------------------------------------------------------
+    # A-share daily bars (baostock universe, chart-similarity scan)
+    # ------------------------------------------------------------------
+    def save_daily_bars(self, rows: list[dict]) -> int:
+        """Bulk-upsert daily bars into ``daily_kline``. Returns rows written."""
+        batch = [
+            (
+                r.get("code", ""),
+                r.get("trade_date", ""),
+                r.get("open"),
+                r.get("high"),
+                r.get("low"),
+                r.get("close"),
+                r.get("volume"),
+                r.get("amount"),
+            )
+            for r in rows
+        ]
+        cur = self.conn.executemany(
+            """INSERT OR REPLACE INTO daily_kline
+               (code, trade_date, open, high, low, close, volume, amount)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            batch,
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def save_universe(self, rows: list[tuple[str, str]]) -> int:
+        """Upsert ``(code, name)`` pairs into ``ashare_universe``."""
+        cur = self.conn.executemany(
+            "INSERT OR REPLACE INTO ashare_universe (code, name) VALUES (?, ?)",
+            rows,
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def universe_names(self) -> dict[str, str]:
+        """Return ``{code: name}`` for the persisted A-share universe."""
+        rows = self.conn.execute(
+            "SELECT code, name FROM ashare_universe"
+        ).fetchall()
+        return {r["code"]: r["name"] for r in rows}
+
+    def daily_last_date(self, code: str) -> Optional[str]:
+        """Return the newest ``trade_date`` persisted for *code*, or *None*."""
+        row = self.conn.execute(
+            "SELECT MAX(trade_date) FROM daily_kline WHERE code = ?", (code,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def daily_closes(
+        self,
+        start: str | None = None,
+        end: str | None = None,
+        codes: list[str] | None = None,
+    ) -> dict[str, list[float]]:
+        """Return ``{code: [close...]}`` ordered by ``trade_date``.
+
+        Used by the chart-similarity scan: fetch every symbol's close series
+        over a date window in one query, then rank by DTW.
+        """
+        query = "SELECT code, close FROM daily_kline"
+        conds: list[str] = []
+        params: list = []
+        if start:
+            conds.append("trade_date >= ?")
+            params.append(start)
+        if end:
+            conds.append("trade_date <= ?")
+            params.append(end)
+        if codes:
+            conds.append(f"code IN ({','.join('?' * len(codes))})")
+            params.extend(codes)
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        query += " ORDER BY trade_date"
+
+        out: dict[str, list[float]] = {}
+        for r in self.conn.execute(query, params):
+            out.setdefault(r["code"], []).append(float(r["close"]))
+        return out
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 

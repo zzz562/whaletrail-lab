@@ -7,7 +7,7 @@
 | 机器 | 角色 | 路径 | 关键能力 |
 |------|------|------|----------|
 | MacBook | 开发（源码唯一来源、Grok 会话） | `~/github_code/whaletrail-lab` | git、编辑；无 Telegram/OpenClaw/cron |
-| Mac mini | 运行/部署 | `~/Projects/whaletrail-lab` | venv、Clash 代理、Ollama、OpenClaw、cron/launchd |
+| Mac mini | 运行/部署 | `~/Projects/whaletrail-lab` | venv、Clash 代理、Ollama、OpenClaw、cron/launchd。Thunderbolt IP 会变，SSH 不稳时用 `macmini-remote` |
 | VPS | 公网跳板 | — | OpenClaw 公网入口、SSH 反向隧道 |
 
 ## 服务与端口
@@ -66,9 +66,10 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | `scripts/sentiment.py` | X 情绪扫描 | Mac mini（cron） | X token、DeepSeek/Ollama、代理 |
 | `scripts/fetch-tvscreener-watchlist.py` | TradingView watchlist 快照 | Mac mini（cron/手动） | 直连 TV，无需代理 |
 | `scripts/ashare-paper.py` | A股低频率 paper（快照积累→日线→信号；交易日历+时段门禁） | Mac mini（cron/手动） | venv、tvscreener、SQLite、直连 SZSE（无需代理） |
+| `scripts/fetch-baostock-universe.py` | A股全市场日线（相似选股数据源） | Mac mini（手动/月 cron） | venv、baostock、直连（无需代理） |
 | `scripts/seed-ashare-history.py` | A股日线历史种子 | Mac mini（手动） | venv、tvdatafeed、代理 |
 | `scripts/watchlist-report.py` | watchlist Markdown 报表 | 任意（本地读 SQLite） | venv |
-| `scripts/dashboard.py` | Streamlit 看板 | Mac mini（headless） | venv、各服务健康 |
+| `scripts/dashboard.py` | Streamlit 看板 | Mac mini（launchd `ai.whaletrail-dashboard`） | venv、各服务健康 |
 
 ## venv（MacBook 本地开发需要时）
 

@@ -77,6 +77,25 @@ CREATE TABLE IF NOT EXISTS quote_snapshots (
     timestamp       TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_run_id ON portfolio_snapshots(run_id);
+
+
+CREATE TABLE IF NOT EXISTS daily_kline (
+    code            TEXT    NOT NULL,  -- baostock code: sh.600690
+    trade_date      TEXT    NOT NULL,  -- YYYY-MM-DD
+    open            REAL,
+    high            REAL,
+    low             REAL,
+    close           REAL,
+    volume          REAL,
+    amount          REAL,
+    PRIMARY KEY (code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_kline_date ON daily_kline(trade_date);
+
+CREATE TABLE IF NOT EXISTS ashare_universe (
+    code            TEXT    PRIMARY KEY,  -- baostock code
+    name            TEXT
+);
 """
 
 

@@ -100,7 +100,15 @@ class Account:
         """
         prices = dict(self.last_prices)
         if latest_prices:
-            prices.update(latest_prices)
+            for sym, price in latest_prices.items():
+                if price is None:
+                    continue
+                try:
+                    px = float(price)
+                except (TypeError, ValueError):
+                    continue
+                if px == px and px > 0:
+                    prices[sym] = px
         positions_value = 0.0
         for sym, pos in self.positions.items():
             if pos.is_flat:

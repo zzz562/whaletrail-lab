@@ -1,6 +1,8 @@
 # WhaleTrail — gold + US daily paper trading + A股低频率 paper (tvscreener/tvdatafeed)
 # A股历史种子（可选，非 PyPI）：手动安装 tvdatafeed
 #   .venv/bin/pip install "git+https://github.com/rongardF/tvdatafeed.git"
+# A股全市场日线（相似选股 / baostock 数据源）
+baostock>=0.8.8
 yfinance>=0.2.40
 pandas>=2.0.0
 numpy>=1.24.0

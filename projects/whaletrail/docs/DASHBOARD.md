@@ -73,16 +73,19 @@ open http://localhost:8766/
 ```
 
 ```bash
-# Mac mini：看板是手动 headless，不是 launchd
-# 查进程
+# Mac mini：看板由 launchd `ai.whaletrail-dashboard` 托管（KeepAlive）
+launchctl list | grep whaletrail-dashboard
 lsof -iTCP:8766 -sTCP:LISTEN
 
-# 重启（主题 / CSS 改完要重启，不只是 rerun）
-kill $(lsof -tiTCP:8766 -sTCP:LISTEN)
-cd ~/Projects/whaletrail-lab/projects/whaletrail
-nohup .venv/bin/streamlit run scripts/dashboard.py \
-  --server.port 8766 --server.headless true \
-  >/tmp/dashboard-8766.log 2>&1 &
+# 首次部署（仓库已 pull 后）
+cp ~/Projects/whaletrail-lab/projects/whaletrail/scripts/ai.whaletrail-dashboard.plist ~/Library/LaunchAgents/
+# 若已有手动 streamlit，先杀掉再 load，避免 :8766 抢端口
+kill $(lsof -tiTCP:8766 -sTCP:LISTEN) 2>/dev/null
+launchctl bootout gui/$(id -u)/ai.whaletrail-dashboard 2>/dev/null
+launchctl load -w ~/Library/LaunchAgents/ai.whaletrail-dashboard.plist
+
+# 主题 / CSS 改完：重启进程（KeepAlive 会拉起来）
+launchctl kickstart -k gui/$(id -u)/ai.whaletrail-dashboard
 ```
 
 `ai.whaletrail-live` 是 paper-live 扫描，**不是**这块 Streamlit。

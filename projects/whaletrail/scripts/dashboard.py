@@ -21,7 +21,11 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from whaletrail.data.baostock_source import to_baostock_code
+from whaletrail.data.history import build_daily_history
+from whaletrail.data.watchlist import load_watchlist
 from whaletrail.metrics.performance import calculate_metrics, compute_trade_pnl
+from whaletrail.similarity import normalize, rank_similar
 from whaletrail.storage.repository import Repository
 
 st.set_page_config(page_title="WhaleTrail", layout="wide", page_icon="🐋")
@@ -31,6 +35,7 @@ RESULTS_DIR = ROOT / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = RESULTS_DIR / "whaletrail.db"
 DATA_CACHE_DIR = ROOT / "data_cache"
+WATCHLIST_PATH = ROOT / "config" / "watchlist.yaml"
 
 SCORE_COLORS = {"bullish": "#4ade80", "bearish": "#f87171", "neutral": "#8b98a9"}
 SCORE_EMOJI = {"bullish": "📈", "bearish": "📉", "neutral": "➖"}
@@ -431,8 +436,10 @@ def _launchd_rows() -> list[dict]:
         return rows
     for label, display in [
         ("ai.whaletrail-live", "Paper Live"),
+        ("ai.whaletrail-dashboard", "Dashboard"),
         ("homebrew.mxcl.ollama", "Ollama"),
         ("ai.openclaw.gateway", "OpenClaw Gateway"),
+        ("com.zeph.reverse-tunnel", "Reverse tunnel"),
     ]:
         rows.append({"服务": f"launchd: {display}", "端口": "-", "状态": "✅" if label in out else "❌"})
     return rows
@@ -1140,6 +1147,104 @@ def page_status() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Page: 相似选股
+# ═══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def _similarity_universe() -> tuple[dict[str, list[float]], dict[str, str], str]:
+    """Return (closes, names, source_label) for the chart-similarity scan.
+
+    Prefers the whole-market baostock ``daily_kline`` table when populated,
+    and falls back to the 8-stock A-share watchlist accumulated from
+    tvscreener snapshots.  Closes are limited to the last ~300 trading days
+    to bound memory; ``rank_similar`` truncates further to the chosen window.
+    """
+    try:
+        repo = Repository(DB_PATH)
+        start = (date.today() - pd.Timedelta(days=300)).strftime("%Y-%m-%d")
+        closes = repo.daily_closes(start=start)
+        names = repo.universe_names()
+        repo.close()
+        if closes:
+            # Ensure the watchlist stocks show Chinese names even when
+            # ashare_universe was not populated (e.g. a --codes backfill).
+            try:
+                for item in load_watchlist(WATCHLIST_PATH):
+                    if item.market == "china":
+                        names.setdefault(to_baostock_code(item.tv_symbol), item.name)
+            except Exception:
+                pass
+            return closes, names, f"全市场 {len(closes)} 只 · baostock daily_kline"
+    except Exception:
+        pass
+
+    items = [i for i in load_watchlist(WATCHLIST_PATH) if i.market == "china" and i.tradable]
+    closes, names = {}, {}
+    for item in items:
+        hist = build_daily_history(DB_PATH, item.tv_symbol)
+        if hist.empty:
+            continue
+        closes[item.tv_symbol] = [float(x) for x in hist["close"].tolist()]
+        names[item.tv_symbol] = item.name
+    return closes, names, f"A股 watchlist {len(closes)} 只 · tvscreener 快照积累"
+
+
+def page_similar() -> None:
+    _page_header("🔍", "相似选股", "DTW 波形相似 · 找与参考标的近期走势相近的股票")
+    closes, names, source_label = _similarity_universe()
+    if not closes:
+        st.info("暂无 A 股历史数据。运行 scripts/fetch-baostock-universe.py（全市场）或先积累 tvscreener 快照。")
+        return
+
+    def _label(code: str) -> str:
+        name = names.get(code) or ""
+        return f"{name} ({code})" if name else code
+
+    all_codes = sorted(closes.keys())
+    default = next((c for c in ("sh.601899", "SSE:601899") if c in closes), all_codes[0])
+
+    ref = st.selectbox("参考标的", all_codes, index=all_codes.index(default), format_func=_label)
+    window = st.number_input("对比窗口（交易日）", min_value=10, max_value=250, value=90, step=10)
+    top_n = st.slider("显示结果数", 5, 50, 20, step=5)
+    st.caption(f"数据源: {source_label}")
+
+    if not st.button("🔍 运行相似度扫描", width="stretch"):
+        return
+
+    with st.spinner(f"正在扫描 {len(closes)} 只标的…"):
+        ranked = rank_similar(closes[ref], closes, window=int(window))
+    ranked = [r for r in ranked if r[0] != ref][: top_n]
+
+    if not ranked:
+        st.caption("无有效候选（候选历史不足或参考标的无效）")
+        return
+
+    rows = [
+        {"排名": i, "代码": code, "名称": names.get(code, ""), "DTW 距离": round(dist, 4)}
+        for i, (code, dist) in enumerate(ranked, start=1)
+    ]
+    styled = _style_base(pd.DataFrame(rows).style.hide(axis="index"))
+    _show(styled, width="stretch")
+
+    # Normalised overlay: reference + top matches, aligned by bar index.
+    st.markdown('<div class="sec-label">归一化走势叠加</div>', unsafe_allow_html=True)
+    chart_rows = []
+    for code in [ref] + [r[0] for r in ranked[:5]]:
+        series = normalize(closes[code][-int(window):])
+        chart_rows.extend(
+            {"t": t, "value": float(v), "series": names.get(code) or code}
+            for t, v in enumerate(series)
+        )
+    df_ch = pd.DataFrame(chart_rows)
+    line = alt.Chart(df_ch).mark_line(strokeWidth=2).encode(
+        x=alt.X("t:Q", title="窗口内第 N 个交易日"),
+        y=alt.Y("value:Q", title="归一化收盘 (0–1)"),
+        color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top")),
+        tooltip=["series", "t", "value"],
+    ).properties(height=320, width=980)
+    st.altair_chart(_alt_dark(line), width="stretch")
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Route
 # ═══════════════════════════════════════════════════════════════════
 st.sidebar.markdown(
@@ -1154,6 +1259,7 @@ PAGES = {
     "🔴 实时信号": page_live,
     "🐋 情绪监控": page_sentiment,
     "👀 Watchlist": page_watchlist,
+    "🔍 相似选股": page_similar,
     "🏠 运行状态": page_status,
 }
 page = st.sidebar.radio("导航", list(PAGES), label_visibility="collapsed")

@@ -33,8 +33,8 @@ sentiment.py
     │   └── 每条推文 → bullish/bearish/neutral + 1-5 置信度
     │
     └── 输出
-        ├── results/sentiment_YYYYMMDD.json   (每日快照)
-        ├── results/sentiment_latest.json      (最新 → 看板读)
+        ├── results/sentiment_YYYYMMDD.json   (每日快照；失败也会写，带 fetch_failed)
+        ├── results/sentiment_latest.json      (最新 → 看板读；X API 全失败或 0 条新评分时不覆盖)
         └── results/sentiment_state.json       (去重: seen_tweets + user_cache)
 ```
 

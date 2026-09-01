@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>ai.whaletrail-dashboard</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail/.venv/bin/streamlit</string>
+		<string>run</string>
+		<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail/scripts/dashboard.py</string>
+		<string>--server.port</string>
+		<string>8766</string>
+		<string>--server.headless</string>
+		<string>true</string>
+		<string>--browser.gatherUsageStats</string>
+		<string>false</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail/logs/dashboard.err</string>
+	<key>StandardOutPath</key>
+	<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail/logs/dashboard.log</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail</string>
+</dict>
+</plist>
