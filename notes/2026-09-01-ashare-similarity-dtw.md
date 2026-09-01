@@ -42,8 +42,8 @@ Mac mini（Streamlit :8766, launchd ai.whaletrail-dashboard）
 cd ~/Projects/whaletrail-lab/projects/whaletrail
 .venv/bin/pip install -r requirements.txt        # 新增 baostock>=0.8.8
 
-# 首次全市场回填（~5000 只，2015 起；增量按月 cron 只拉最新）
-.venv/bin/python scripts/fetch-baostock-universe.py
+# 首次全市场回填（5212 只，2025-01-01 起；增量 cron 只拉最新）
+.venv/bin/python scripts/fetch-baostock-universe.py --start 20250101
 
 # 或先只回填 watchlist 8 只（快速验证）
 .venv/bin/python scripts/fetch-baostock-universe.py \
@@ -58,14 +58,15 @@ baostock 是免费无 token 的国内源，Mac mini 直连（同 SZSE 交易日�
 - Phase 0（Mac mini 真实 8 只）：参考紫金矿业 → 晓程科技最像（6.65），符合「黄金/资源股聚簇」预期。
 - Phase 1（Mac mini 真实 baostock）：拉取 600690 成功 21 行、8 只回填 5160 行，落库正确。
 - Phase 2（Streamlit AppTest，MacBook 空态 + Mac mini 真数据）：新页渲染无异常，点「运行相似度扫描」出排名表 + 叠加图，无异常。
+- 全市场回填（2026-09-01）：5212 只 / 2,073,394 行（2025-01-02 → 2026-08-31）；全市场 90 日扫描 3.65s。参考紫金矿业在 5212 只里命中的是科创板/创业板科技股，与 8 只 watchlist 子集命中不同——这正是全市场发现的价值。
 
 ## 性能 / 已知边界
 
-- 纯 NumPy DTW：5000 只 × 90 日 ≈ 17s（MacBook 基准）。看板用 `st.cache_data(ttl=3600)` + spinner；首查 ~17s，缓存后瞬时。默认 8 只 watchlist 场景瞬时。
+- 纯 NumPy DTW：全市场 5212 只 × 90 日 ≈ **3.65s（Mac mini 实测）**。看板用 `st.cache_data(ttl=3600)` + spinner；首查 ~4s、缓存后瞬时，无需预计算。
 - `--codes` 回填不写 `ashare_universe` 名称；看板对 watchlist 股票用 watchlist 名称兜底（`dashboard.py` 内合并），全市场回填（无 `--codes`）会写入中文名。
 - baostock 无分钟线、指数分钟线有限；本功能只用日线，不涉及。
 - 复权因子、涨跌停、ST 处理不在相似度里做——波形匹配是形态信号，不是交易信号；建议与现有 `whale_flag`（量价异常）叠加使用。
 
-## 未提交提醒
+## 交付状态（2026-09-01 已 commit + push + 部署）
 
-本轮改动在 MacBook 工作区（未 commit），且 Mac mini 工作区有同名未提交改动（`dashboard.py` 等，来自 2026-08-31 决策 15/16）。正式部署走 git：MacBook commit → push → Mac mini pull，不要用 scp 覆盖 mini 本地改动。
+已 commit 到 `origin/main` 并 push，Mac mini 已 `git pull`。全市场回填完成：5212 只 / 2,073,394 行（2025-01-02 → 2026-08-31），`ashare_universe` 中文名 5212 条。待定：增量刷新 cron 节奏（推荐 18:00 CST 每日，baostock ~17:30 出当日 bar）。
