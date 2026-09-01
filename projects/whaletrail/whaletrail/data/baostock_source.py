@@ -140,12 +140,13 @@ class BaostockSource(DataSource):
     def list_universe(self, day: date | None = None) -> list[tuple[str, str]]:
         """Return ``(code, name)`` for currently trading A-shares.
 
-        ``day`` defaults to today (China time); baostock needs a recent
-        trading day to enumerate the live universe.
+        When *day* is omitted, baostock's own "latest trading day" default is
+        used — more robust than ``date.today()``, which can be a non-trading
+        day or a day whose universe is not published yet.
         """
         self._ensure_login()
         bs = self._import()
-        day_str = (day or date.today()).strftime("%Y-%m-%d")
+        day_str = day.strftime("%Y-%m-%d") if day else ""
         rs = bs.query_all_stock(day=day_str)
         if rs.error_code != "0":
             raise RuntimeError(f"baostock query_all_stock failed: {rs.error_code} {rs.error_msg}")

@@ -56,7 +56,7 @@ def main() -> None:
             codes = [(c.strip(), "") for c in args.codes.split(",") if c.strip()]
         else:
             print("查询 A 股全市场代码…")
-            codes = source.list_universe(today)
+            codes = source.list_universe()
             if codes:
                 repo.save_universe(codes)
             print(f"universe: {len(codes)} 只（交易中）")
