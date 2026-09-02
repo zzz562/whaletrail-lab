@@ -1,6 +1,6 @@
 # WhaleTrail Scope — 基建定界
 
-> 更新：2026-08-31
+> 更新：2026-09-02
 
 ## 一句话
 
@@ -64,6 +64,7 @@ yfinance ──► ParquetCache ──► Backtester ──► results/*.json
 15. 运行面诚实化（2026-08-31）：看板改 launchd `ai.whaletrail-dashboard`（重启自愈，不再手动 nohup）；`daily-report.sh` 结束日改为当天，并打印 GLD/SPY 买入持有对照（冻结的 `2026-08-12` 会让日报变成旧回测复印件）；`sentiment.py` 在 X API 全失败或 0 条新评分时不覆盖 `sentiment_latest.json`；`ashare-paper.py` 对缺 `qty` 的旧 LONG 按 ¥5 万名义补齐手数。代码：`scripts/daily-report.sh`、`scripts/sentiment.py`、`scripts/ashare-paper.py`、`scripts/ai.whaletrail-dashboard.plist`。
 16. 不做大而全平台（2026-08-31）：产品形状收成两本薄账——黄金日线（GLD 策略 vs B&H vs SPY 对照 + 情绪天气）和 A 股 8 标的 15:30 paper。不扩市场、不扩到 100 KOL、不恢复 5m 跟单。`gold_sma` 是否替换仍按决策 14 的网格标准，不在这次改。
 17. A股相似选股（DTW）+ baostock 全市场日线（2026-09-01）：移植 ValarmClub 的「找相似走势」到 WhaleTrail（`whaletrail/similarity.py`，纯 NumPy 重写，不引入 dtaidistance），看板新增「🔍 相似选股」页（`scripts/dashboard.py`）。数据源用 baostock（免费无 token、国内直连，非 akshare/东财，不推翻决策 1），全市场日线落 SQLite `daily_kline`（`whaletrail/data/baostock_source.py` + `scripts/fetch-baostock-universe.py`）。定位是**读线**：形态筛选 + 观察，不是交易信号、不扩交易范围（决策 16 的两本薄账不变），与 `whale_flag`（量价异常）叠加使用；tvscreener 快照路径（决策 5）继续承担 8 只 paper。详见 `notes/2026-09-01-ashare-similarity-dtw.md`。
+18. 看板收成四页（2026-09-02）：Streamlit 是人看的只读 UI，侧栏仅 **Paper** / **相似选股** / **KOL 评测** / **跟庄复盘**。Telegram / OpenClaw 不走主路径（进程不停）。**跟庄 ≠ KOL**：跟庄只表示现有 watchlist 上的标签「观察 / 接近 / 触发」，用已收盘日 K，不是当日阴、不是左压，不与 KOL 混页；KOL 评测是 A 股荐股推文 vs 事后对照（18 账号冻结），文案不称跟庄。Paper 黄金账是 GLD `gold_sma` vs 买入持有 vs SPY；`gold_sma` 弱于 B&H，价值在压回撤；5m/live 仅观察；A 股 paper 是 15:30 日频。GLD / GC=F 只作监控/对照，须标「不是银行牌价 / 不是纸黄金账」。A 股阴线高低点用 baostock 复权日 K、仅 watchlist；tvscreener 是快照，不是已完成日线；交易日历 = 深交所官方。**仍未决（本次不改、不假装已定）：** 纸黄金独立 paper 的数据源与日切；`watchlist.yaml`；`yin-right.json`（不新建）。代码：`scripts/dashboard.py`、`docs/DASHBOARD.md`。
 
 ## 决策记录规范
 
