@@ -1,6 +1,6 @@
 # Deploy — Mac mini 运行与运维
 
-> Mac mini 是运行/部署机。本文档只覆盖 whaletrail 相关服务；gwht 不依赖 gvalar 手册。
+> Mac mini 是唯一开发机/源码唯一来源 + 运行/部署机。本文档只覆盖 whaletrail 相关服务；gwht 不依赖 gvalar 手册。
 
 ## 连接
 
@@ -20,15 +20,22 @@ Thunderbolt 链路 IP 会在插拔/重启后漂移。`ssh macmini` 依赖 `~/.ss
 
 ## 代码部署
 
+Mac mini 是源码唯一来源：在 mini 上写代码、commit、push；MacBook 只读 `git pull`。
+
 ```bash
+# Mac mini 提交并推送
 cd ~/Projects/whaletrail-lab
+git add -A && git commit -m "..." && git push origin main
+
+# MacBook 只读同步
+cd ~/github_code/whaletrail-lab
 git pull origin main
 ```
 
-若 Mac mini 无法访问 GitHub，改用 rsync 从 MacBook 同步：
+若 Mac mini 无法访问 GitHub，改用 rsync 从 Mac mini 同步到 MacBook（方向反转）：
 
 ```bash
-rsync -avz ~/github_code/whaletrail-lab/ macmini:~/Projects/whaletrail-lab/ \
+rsync -avz macmini:~/Projects/whaletrail-lab/ ~/github_code/whaletrail-lab/ \
   --exclude .venv --exclude data_cache --exclude results --exclude logs
 ```
 

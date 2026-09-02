@@ -6,8 +6,8 @@
 
 | 机器 | 角色 | 路径 | 关键能力 |
 |------|------|------|----------|
-| MacBook | 开发（源码唯一来源、Grok 会话） | `~/github_code/whaletrail-lab` | git、编辑；无 Telegram/OpenClaw/cron |
-| Mac mini | 运行/部署 | `~/Projects/whaletrail-lab` | venv、Clash 代理、Ollama、OpenClaw、cron/launchd。Thunderbolt IP 会变，SSH 不稳时用 `macmini-remote` |
+| Mac mini | 唯一开发机/源码唯一来源 + 运行/部署 | `~/Projects/whaletrail-lab` | 写代码、git push、venv、Clash 代理、Ollama、OpenClaw、cron/launchd。Thunderbolt IP 会变，SSH 不稳时用 `macmini-remote` |
+| MacBook | 客户端/只读 | `~/github_code/whaletrail-lab` | git pull 查看；无 Telegram/OpenClaw/cron |
 | VPS | 公网跳板 | — | OpenClaw 公网入口、SSH 反向隧道 |
 
 ## 服务与端口
@@ -71,7 +71,7 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | `scripts/watchlist-report.py` | watchlist Markdown 报表 | 任意（本地读 SQLite） | venv |
 | `scripts/dashboard.py` | Streamlit 看板 | Mac mini（launchd `ai.whaletrail-dashboard`） | venv、各服务健康 |
 
-## venv（MacBook 本地开发需要时）
+## venv（MacBook 本地需要时）
 
 ```bash
 cd ~/github_code/whaletrail-lab/projects/whaletrail

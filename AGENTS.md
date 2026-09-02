@@ -6,17 +6,17 @@
 
 | 机器 | 角色 |
 |------|------|
-| MacBook | **唯一开发机 / 源码唯一来源**：写代码、Grok 会话、git push。不跑 Telegram/OpenClaw/cron |
-| Mac mini | **运行/部署机**：回测、实时扫描、Telegram、cron、launchd、看板 `:8766` |
+| Mac mini | **唯一开发机 / 源码唯一来源**：写代码、diff、docs、git push。同时是运行/部署机：回测、实时扫描、Telegram、cron、launchd、看板 `:8766` |
+| MacBook | **客户端 / 只读**：`git pull` 查看，不写代码、不 push。不跑 Telegram/OpenClaw/cron |
 
-开发 = MacBook 写，Mac mini 跑。MacBook 通过 SSH 端口转发访问 Mac mini 服务（见 `projects/whaletrail/docs/ENVIRONMENT.md`）。
+开发 = Mac mini 写 + 跑。MacBook 通过 SSH 端口转发访问 Mac mini 服务（见 `projects/whaletrail/docs/ENVIRONMENT.md`）。
 
 ## 开发 / 运行循环
 
 | 任务 | 在哪台 |
 |------|--------|
-| 写代码、diff、docs、Grok 会话 | MacBook |
-| 纯 Python 回测 / 数据抓取（需 venv + 代理） | Mac mini（主）；MacBook 需先建 venv |
+| 写代码、diff、docs、commit、push | Mac mini |
+| 纯 Python 回测 / 数据抓取（需 venv + 代理） | Mac mini |
 | 实时扫描 / Telegram / sentiment / cron / launchd | Mac mini |
 | Ollama、OpenClaw Gateway | Mac mini |
 | 看板生产实例 | Mac mini `:8766`（MacBook 经隧道访问） |
@@ -24,18 +24,17 @@
 ## Code sync
 
 ```
-MacBook（开发）──push──> GitHub ──pull──> Mac mini（部署）
+Mac mini（开发）──push──> GitHub ──pull──> MacBook（客户端）
 ```
 
 ```bash
-# MacBook 提交
-cd ~/github_code/whaletrail-lab
+# Mac mini 提交（唯一开发机）
+cd ~/Projects/whaletrail-lab
 git add -A && git commit -m "..." && git push origin main
 
-# Mac mini 部署
-cd ~/Projects/whaletrail-lab
+# MacBook 只读同步
+cd ~/github_code/whaletrail-lab
 git pull origin main
-# 若 Mac mini 无法访问 GitHub，改用 rsync over 隧道（见 docs/DEPLOY.md）
 ```
 
 ## 文档地图
