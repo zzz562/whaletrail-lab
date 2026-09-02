@@ -7,7 +7,7 @@
 | 机器 | 角色 | 路径 | 关键能力 |
 |------|------|------|----------|
 | Mac mini | 唯一开发机/源码唯一来源 + 运行/部署 | `~/Projects/whaletrail-lab` | 写代码、git push、venv、Clash 代理、Ollama、OpenClaw、cron/launchd。Thunderbolt IP 会变，SSH 不稳时用 `macmini-remote` |
-| MacBook | 客户端/只读 | `~/github_code/whaletrail-lab` | git pull 查看；无 Telegram/OpenClaw/cron |
+| MacBook | 观察者/只读 | `~/github_code/whaletrail-lab` | git pull 后人工查看代码；无 Telegram/OpenClaw/cron |
 | VPS | 公网跳板 | — | OpenClaw 公网入口、SSH 反向隧道 |
 
 ## 服务与端口

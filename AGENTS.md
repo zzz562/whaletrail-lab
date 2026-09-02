@@ -7,9 +7,9 @@
 | 机器 | 角色 |
 |------|------|
 | Mac mini | **唯一开发机 / 源码唯一来源**：写代码、diff、docs、git push。同时是运行/部署机：回测、实时扫描、Telegram、cron、launchd、看板 `:8766` |
-| MacBook | **客户端 / 只读**：`git pull` 查看，不写代码、不 push。不跑 Telegram/OpenClaw/cron |
+| MacBook | **观察者 / 只读**：`git pull` 后人工查看/阅读代码，不开发、不 push、不跑服务 |
 
-开发 = Mac mini 写 + 跑。MacBook 通过 SSH 端口转发访问 Mac mini 服务（见 `projects/whaletrail/docs/ENVIRONMENT.md`）。
+开发 = Mac mini 写 + 跑。MacBook 是观察者：只 `git pull` 后人工查看代码，经 SSH 端口转发看 Mac mini 服务（见 `projects/whaletrail/docs/ENVIRONMENT.md`）。
 
 ## 开发 / 运行循环
 
