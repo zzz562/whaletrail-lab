@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""WhaleTrail Dashboard — read-only four-tab monitor.
+"""WhaleTrail Dashboard — read-only five-tab monitor.
 
-Tabs: Paper / 相似选股 / KOL 评测 / 跟庄复盘.
+Tabs: 黄金 paper / A股 paper / 相似选股 / KOL 评测 / 跟庄复盘.
 """
 from __future__ import annotations
 
@@ -132,10 +132,13 @@ def latest_quote_ts() -> Optional[str]:
     except Exception:
         return None
 
+def _cache_parquet_path(symbol: str) -> Path:
+    safe = symbol.replace("/", "_").replace("\\", "_").replace(":", "_")
+    return DATA_CACHE_DIR / f"{safe}.parquet"
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_cached_close(symbol: str) -> Optional[pd.DataFrame]:
-    safe = symbol.replace("/", "_").replace("\\", "_").replace(":", "_")
-    path = DATA_CACHE_DIR / f"{safe}.parquet"
+    path = _cache_parquet_path(symbol)
     if not path.exists():
         return None
     try:
@@ -330,8 +333,22 @@ def _backtest_metrics(data: dict) -> tuple[list[dict], dict, float]:
         metrics = calculate_metrics(enriched, equity, initial_cash)
     return enriched, metrics, initial_cash
 
+def _load_gc_contrast() -> Optional[pd.DataFrame]:
+    """GC=F only. Never fall back to GLD.parquet."""
+    for symbol in ("GC=F", "GC_F"):
+        path = _cache_parquet_path(symbol)
+        if path.name.upper().startswith("GLD"):
+            continue
+        df = load_cached_close(symbol)
+        if df is not None:
+            return df
+    return None
+
 def _scaled_close_series(symbol: str, start: str, end: str, initial_cash: float, name: str) -> Optional[pd.Series]:
-    df = load_cached_close(symbol)
+    if str(symbol).upper().replace("_", "") in {"GCF", "GC=F"}:
+        df = _load_gc_contrast()
+    else:
+        df = load_cached_close(symbol)
     if df is None:
         return None
     try:
@@ -403,13 +420,22 @@ def _runs_count() -> int:
         return -1
 
 def _pick_gold_sma(files: list[str]) -> Optional[str]:
+    """Prefer daily GLD gold_sma; skip 5m observation runs for the paper book."""
     for name in files:
+        low = name.lower()
         try:
             d = load_backtest(name)
         except Exception:
+            d = {}
+        strat = str(d.get("strategy", "")).lower()
+        sym = str(d.get("symbol", "")).upper()
+        interval = str(d.get("interval") or "").lower()
+        is_gold = (strat.startswith("gold_sma") and sym == "GLD") or ("gold_sma" in low and "gld" in low)
+        if not is_gold:
             continue
-        if str(d.get("strategy", "")).lower().startswith("gold_sma") and str(d.get("symbol", "")).upper() == "GLD":
-            return name
+        if "5m" in low or interval in {"5m", "5min", "minute"}:
+            continue
+        return name
     for name in files:
         low = name.lower()
         if "gold_sma" in low and "gld" in low:
@@ -492,27 +518,30 @@ def _fmt_pct(v: Optional[float]) -> str:
     return "—" if v is None else f"{v:+.2f}%"
 
 def _gold_book_section() -> None:
-    _sec("黄金账 · GLD gold_sma vs 买入持有 vs SPY")
-    _note("GLD / GC=F 仅作监控/对照，不是银行牌价，不是纸黄金账。本页不含银行纸黄金。gold_sma 弱于买入持有，价值在压回撤。")
+    _sec("黄金账 · GLD gold_sma · 对照 SPY / GC=F")
+    _note("账本是 GLD 日线 gold_sma。GC=F 日线只作金价对照，读自己的 Parquet，不进 GLD 缓存。两行都不是银行牌价、不是境内可玩。本页无纸黄金 / AU9999。gold_sma 弱于买入持有，价值在压回撤。")
     files = list_backtest_files()
     gold_name = _pick_gold_sma(files)
     if not gold_name:
-        st.info("没有 GLD gold_sma 回测结果。缺则空。运行 scripts/run-backtest.py gold_sma GLD。")
+        st.info("没有 GLD gold_sma 纸上账结果。缺则空。可在 Mini 跑 scripts/run-backtest.py gold_sma GLD 生成（不改本页策略）。")
         return
     data = load_backtest(gold_name)
     enriched, metrics, initial_cash = _backtest_metrics(data)
     bh = _benchmark_series(data, initial_cash)
     spy = None
     start, end = data.get("start"), data.get("end")
+    gc = None
     if start and end:
         spy = _scaled_close_series("SPY", start, end, initial_cash, "SPY")
+        gc = _scaled_close_series("GC=F", start, end, initial_cash, "GC=F")
     ret = metrics.get("total_return"); dd = metrics.get("max_drawdown")
     bh_ret = _series_return(bh); spy_ret = _series_return(spy); bh_dd = _series_drawdown(bh)
+    gc_ret = _series_return(gc)
     _card_row([
         {"label": "gold_sma", "value": _fmt_pct(ret), "delta": f"最大回撤 {dd:.2f}%" if dd is not None else "—", "delta_color": _num_color(ret or 0), "sub": f"{data.get('start','?')} → {data.get('end','?')}", "accent": "#e6b450"},
-        {"label": "买入持有 GLD", "value": _fmt_pct(bh_ret), "delta": f"最大回撤 {bh_dd:.2f}%" if bh_dd is not None else "本地缓存缺失则空", "delta_color": _num_color(bh_ret or 0) if bh_ret is not None else "#8b98a9", "sub": "data_cache", "accent": "#38bdf8"},
-        {"label": "SPY 对照", "value": _fmt_pct(spy_ret), "delta": "监控/对照 · 不是纸黄金账", "delta_color": _num_color(spy_ret or 0) if spy_ret is not None else "#8b98a9", "sub": "data_cache" if spy is not None else "缓存缺失", "accent": "#38bdf8"},
-        {"label": "Sharpe", "value": f"{metrics.get('sharpe_ratio', 0):.2f}" if metrics else "—", "delta": f"交易 {len(enriched)} 次", "delta_color": "#8b98a9", "sub": gold_name, "accent": "#a78bfa"},
+        {"label": "买入持有 GLD", "value": _fmt_pct(bh_ret), "delta": f"最大回撤 {bh_dd:.2f}%" if bh_dd is not None else "本地缓存缺失则空", "delta_color": _num_color(bh_ret or 0) if bh_ret is not None else "#8b98a9", "sub": "GLD.parquet", "accent": "#38bdf8"},
+        {"label": "SPY 对照", "value": _fmt_pct(spy_ret), "delta": "监控/对照 · 不是境内可玩", "delta_color": _num_color(spy_ret or 0) if spy_ret is not None else "#8b98a9", "sub": "SPY.parquet" if spy is not None else "缓存缺失", "accent": "#38bdf8"},
+        {"label": "GC=F 金价对照", "value": _fmt_pct(gc_ret), "delta": "不是银行牌价 · 不是境内可玩", "delta_color": _num_color(gc_ret or 0) if gc_ret is not None else "#8b98a9", "sub": "GC=F.parquet" if gc is not None else "对照缓存缺失则空", "accent": "#fbbf24"},
     ])
     if bh_ret is not None and ret is not None and ret < bh_ret:
         st.caption("本结果中 gold_sma 弱于买入持有；对照意义在回撤。")
@@ -525,10 +554,12 @@ def _gold_book_section() -> None:
             df_eq = df_eq.join(bh, how="left")
         if spy is not None:
             df_eq = df_eq.join(spy, how="left")
+        if gc is not None:
+            df_eq = df_eq.join(gc, how="left")
         eq = df_eq.reset_index()
-        value_cols = [c for c in ("gold_sma", "买入持有", "SPY") if c in eq.columns]
+        value_cols = [c for c in ("gold_sma", "买入持有", "SPY", "GC=F") if c in eq.columns]
         long = eq.melt(id_vars=["date"], value_vars=value_cols, var_name="系列", value_name="权益")
-        rng = ["#e6b450", "#38bdf8", "#a78bfa"][: len(value_cols)]
+        rng = ["#e6b450", "#38bdf8", "#a78bfa", "#fbbf24"][: len(value_cols)]
         ch = alt.Chart(long.dropna(subset=["权益"])).mark_line(strokeWidth=2).encode(
             x=alt.X("date:T", title=None), y=alt.Y("权益:Q", title=None),
             color=alt.Color("系列:N", scale=alt.Scale(domain=value_cols, range=rng), legend=alt.Legend(title=None, orient="top")),
@@ -615,7 +646,7 @@ def _live_panel() -> None:
 
 def _ashare_paper_section() -> None:
     _sec("A股 paper · 15:30 日频")
-    _note("A 股 paper 按日收盘记账。黄金矿股的跟庄标签在「跟庄复盘」，不进黄金账。")
+    _note("A 股 15:30 paper 账。观察 / 接近 / 触发只在「跟庄复盘」。黄金矿股的跟庄标签也在那页，不进黄金 Paper。")
     state = load_ashare_paper()
     if not state:
         st.info("没有 A 股 paper 状态（results/ashare_paper_state.json）。缺则空。")
@@ -637,10 +668,74 @@ def _ashare_paper_section() -> None:
     if trades:
         _show(_style_base(pd.DataFrame(trades).style.hide(axis="index")), width="stretch")
 
-def page_paper() -> None:
-    _page_header("Paper", "只读监控 · 黄金账 + A股 15:30 paper · 不是下单台")
-    _gold_book_section(); _backtest_section()
-    _sec("5m / live 扫描 · 观察"); _note("5m 与 live 扫描仅观察，不作进场依据。"); _live_panel(); _ashare_paper_section()
+def _gold_ledger_tables(data: dict, enriched: list[dict]) -> None:
+    """持仓 / 成交 / 权益 — human ledger, not a strategy menu."""
+    _sec("权益")
+    equity = data.get("equity_curve", [])
+    if equity:
+        df_e = pd.DataFrame(equity)
+        if "date" in df_e.columns:
+            df_e["date"] = pd.to_datetime(df_e["date"]).dt.date
+        cols = [c for c in ("date", "equity") if c in df_e.columns]
+        _show(_style_base(df_e[cols].tail(30).style.hide(axis="index")).format({"equity": "${:,.2f}"}, na_rep="—"), width="stretch")
+        st.caption("上表最近 30 个权益点；完整曲线见上方。")
+    else:
+        st.caption("无权益曲线")
+
+    _sec("成交")
+    if enriched:
+        df_t = pd.DataFrame(enriched)
+        if "date" in df_t.columns:
+            df_t["date"] = pd.to_datetime(df_t["date"]).dt.date
+        cols = [c for c in ("date", "symbol", "side", "quantity", "price", "commission", "pnl") if c in df_t.columns]
+        styled = (
+            _style_base(df_t[cols].style.hide(axis="index"))
+            .format({"quantity": "{:,.2f}", "price": "${:,.2f}", "commission": "${:,.2f}", "pnl": "${:,.2f}"}, na_rep="—")
+            .map(_side_style, subset=["side"])
+        )
+        if "pnl" in cols:
+            styled = styled.map(lambda v: _num_style(v, ""), subset=["pnl"])
+        _show(styled, width="stretch")
+    else:
+        st.caption("无成交记录")
+
+    _sec("持仓")
+    qty = 0.0
+    last_px = None
+    for tr in enriched:
+        side = str(tr.get("side", "")).upper()
+        q = float(tr.get("quantity") or 0)
+        px = tr.get("price")
+        if side in ("BUY", "LONG"):
+            qty += q
+            last_px = px
+        elif side in ("SELL", "SHORT"):
+            qty -= q
+            last_px = px
+    if abs(qty) > 1e-9:
+        row = {"标的": "GLD", "数量": round(qty, 4), "最近成交价": last_px, "说明": "由成交净额推算 · 只读"}
+        _show(_style_base(pd.DataFrame([row]).style.hide(axis="index")).format({"最近成交价": "${:,.2f}"}, na_rep="—"), width="stretch")
+    else:
+        st.caption("当前无持仓（净仓为 0）")
+
+def page_gold_paper() -> None:
+    _page_header("黄金 paper", "GLD gold_sma 一本账 · 持仓/成交/权益 · GC=F 只对照 · 不是下单台")
+    _gold_book_section()
+    files = list_backtest_files()
+    gold_name = _pick_gold_sma(files)
+    if gold_name:
+        data = load_backtest(gold_name)
+        enriched, _metrics, _initial_cash = _backtest_metrics(data)
+        st.caption(f"账本文件: {gold_name} · 策略 gold_sma · 标的 GLD · 多策略清单未决，本页不展开")
+        _gold_ledger_tables(data, enriched)
+    _sec("5m / live 扫描 · 观察")
+    _note("5m 与 live 扫描仅观察，不作进场依据。纸黄金 / AU9999 不上板。")
+    _live_panel()
+
+def page_ashare_paper() -> None:
+    _page_header("A股 paper", "空壳 · 策略未决 · 金矿股归本页 · 不是跟庄 · 不是下单台")
+    _note("这轮只拆壳。A 股 paper 策略未决；观察/接近/触发只在「跟庄复盘」。紫金等金矿股将来进本页，不进黄金 paper。")
+    st.info("A 股 paper 内容待拍。现网 ashare_paper_state 先不展示，避免和跟庄三字混读。")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _similarity_universe() -> tuple[dict[str, list[float]], dict[str, str], str]:
@@ -685,20 +780,25 @@ def page_similar() -> None:
     ref = st.selectbox("参考标的", all_codes, index=all_codes.index(default), format_func=_label)
     window = st.number_input("对比窗口（交易日）", min_value=10, max_value=250, value=90, step=10)
     top_n = st.slider("显示结果数", 5, 50, 20, step=5)
-    st.caption(f"数据源: {source_label}")
+    win = int(window)
+    eligible = {c: s for c, s in closes.items() if len(s) >= win}
+    skipped = len(closes) - len(eligible)
+    st.caption(f"数据源: {source_label} · 丢掉 {skipped} 只不足 {win} 根的短序列（新股上市未满窗口）")
+    if ref not in eligible:
+        st.info(f"参考标的窗口内不足 {win} 根，缩小窗口或换一只。"); return
     if not st.button("运行相似度扫描", width="stretch"):
         return
-    with st.spinner(f"正在扫描 {len(closes)} 只标的…"):
-        ranked = rank_similar(closes[ref], closes, window=int(window))
+    with st.spinner(f"正在扫描 {len(eligible)} 只满窗口标的…"):
+        ranked = rank_similar(eligible[ref], eligible, window=win)
     ranked = [r for r in ranked if r[0] != ref][: top_n]
     if not ranked:
-        st.caption("无有效候选"); return
+        st.caption("无有效候选（短序列已丢掉）"); return
     rows = [{"排名": i, "代码": code, "名称": names.get(code, ""), "DTW 距离": round(dist, 4)} for i, (code, dist) in enumerate(ranked, start=1)]
     _show(_style_base(pd.DataFrame(rows).style.hide(axis="index")), width="stretch")
     _sec("归一化走势叠加")
     chart_rows = []
     for code in [ref] + [r[0] for r in ranked[:5]]:
-        series = normalize(closes[code][-int(window):])
+        series = normalize(eligible[code][-win:])
         chart_rows.extend({"t": t, "value": float(v), "series": names.get(code) or code} for t, v in enumerate(series))
     line = alt.Chart(pd.DataFrame(chart_rows)).mark_line(strokeWidth=2).encode(
         x=alt.X("t:Q", title="窗口内第 N 个交易日"), y=alt.Y("value:Q", title="归一化收盘 (0–1)"),
@@ -778,7 +878,7 @@ with tb1:
 with tb2:
     if st.button("刷新"):
         st.cache_data.clear(); st.rerun()
-PAGES = {"Paper": page_paper, "相似选股": page_similar, "KOL 评测": page_kol, "跟庄复盘": page_genzhuang}
+PAGES = {"黄金 paper": page_gold_paper, "A股 paper": page_ashare_paper, "相似选股": page_similar, "KOL 评测": page_kol, "跟庄复盘": page_genzhuang}
 tabs = st.tabs(list(PAGES))
 for tab, fn in zip(tabs, PAGES.values()):
     with tab:
