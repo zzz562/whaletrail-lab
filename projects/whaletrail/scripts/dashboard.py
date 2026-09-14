@@ -738,11 +738,18 @@ def page_ashare_paper() -> None:
     st.info("A 股 paper 内容待拍。现网 ashare_paper_state 先不展示，避免和跟庄三字混读。")
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _similarity_universe() -> tuple[dict[str, list[float]], dict[str, str], str]:
+def _similarity_universe(
+    start: str | None = None,
+    end: str | None = None,
+) -> tuple[dict[str, list[float]], dict[str, str], str]:
+    """Close series for DTW scan. Prefer baostock daily_kline; never invent OHLC."""
     try:
         repo = Repository(DB_PATH)
-        start = (date.today() - pd.Timedelta(days=300)).strftime("%Y-%m-%d")
-        closes = repo.daily_closes(start=start); names = repo.universe_names(); repo.close()
+        if start is None and end is None:
+            start = (date.today() - pd.Timedelta(days=420)).strftime("%Y-%m-%d")
+        closes = repo.daily_closes(start=start, end=end)
+        names = repo.universe_names()
+        repo.close()
         if closes:
             try:
                 for item in load_watchlist(WATCHLIST_PATH):
@@ -750,9 +757,13 @@ def _similarity_universe() -> tuple[dict[str, list[float]], dict[str, str], str]
                         names.setdefault(to_baostock_code(item.tv_symbol), item.name)
             except Exception:
                 pass
-            return closes, names, f"全市场 {len(closes)} 只 · baostock daily_kline"
+            rng = f"{start or '?'}→{end or '最新'}"
+            return closes, names, f"全市场 {len(closes)} 只 · baostock daily_kline · {rng}"
     except Exception:
         pass
+    # Fallback: watchlist snapshots — no reliable calendar window; only for trailing mode.
+    if start is not None or end is not None:
+        return {}, {}, "无 baostock daily_kline · 固定窗不可用（不拿 tvscreener 冒充日 K）"
     try:
         items = [i for i in load_watchlist(WATCHLIST_PATH) if i.market == "china"]
     except Exception:
@@ -762,47 +773,156 @@ def _similarity_universe() -> tuple[dict[str, list[float]], dict[str, str], str]
         hist = build_daily_history(DB_PATH, item.tv_symbol)
         if hist.empty:
             continue
-        closes[item.tv_symbol] = [float(x) for x in hist["close"].tolist()]; names[item.tv_symbol] = item.name
-    return closes, names, f"A股 watchlist {len(closes)} 只 · tvscreener 快照积累"
+        closes[item.tv_symbol] = [float(x) for x in hist["close"].tolist()]
+        names[item.tv_symbol] = item.name
+    return closes, names, f"A股 watchlist {len(closes)} 只 · tvscreener 快照积累（仅 trailing）"
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _template_ohlc(code: str, start: str | None, end: str | None) -> pd.DataFrame:
+    """Template-stock OHLC from daily_kline. Empty frame if missing."""
+    try:
+        repo = Repository(DB_PATH)
+        rows = repo.daily_ohlc(code, start=start, end=end)
+        repo.close()
+    except Exception:
+        return pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    for col in ("open", "high", "low", "close"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df.dropna(subset=["open", "high", "low", "close"])
+
+def _render_template_kline(df: pd.DataFrame, mark_start: date, mark_end: date, title: str) -> None:
+    """Daily K for template; shaded band = 圈定模板窗口（观察用，不是买卖/三字）。"""
+    if df.empty:
+        st.info("模板股该区间无日 K（baostock/daily_kline 缺行）。空图，不编 OHLC。")
+        return
+    plot = df.copy()
+    plot["up"] = plot["close"] >= plot["open"]
+    lo, hi = pd.Timestamp(mark_start), pd.Timestamp(mark_end)
+    band = alt.Chart(pd.DataFrame({"x": [lo], "x2": [hi]})).mark_rect(opacity=0.18, color="#e6b450").encode(
+        x="x:T", x2="x2:T"
+    )
+    rules = alt.Chart(plot).mark_rule().encode(
+        x="trade_date:T", y="low:Q", y2="high:Q",
+        color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
+    )
+    bars = alt.Chart(plot).mark_bar(size=5).encode(
+        x=alt.X("trade_date:T", title=None),
+        y=alt.Y("open:Q", title=None),
+        y2="close:Q",
+        color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
+        tooltip=["trade_date:T", "open:Q", "high:Q", "low:Q", "close:Q"],
+    )
+    ch = (band + rules + bars).properties(height=280, width=980, title=title)
+    st.altair_chart(_alt_dark(ch), width="stretch")
+    st.caption("黄带=圈定模板窗口（只服务形态对比，不是买卖区间，也不是观察/接近/触发）。")
 
 def page_similar() -> None:
     _page_header("相似选股", "DTW 形态观察 · 不是交易账 · 不扩可交易名单")
-    _note("观察工具。形态相近不等于可交易，不产出买卖指令。")
-    closes, names, source_label = _similarity_universe()
+    _note("观察工具。形态相近不等于可交易，不产出买卖指令。圈定区间只当模板窗口，不写三字、不进跟庄。")
+
+    mode = st.radio(
+        "对比窗口模式",
+        ("当下往前（交易日根数）", "固定起止日（深交所交易日）"),
+        horizontal=True,
+    )
+    top_n = st.slider("显示结果数", 5, 50, 20, step=5)
+
+    if mode.startswith("当下往前"):
+        window = st.number_input("对比窗口（交易日）", min_value=10, max_value=250, value=90, step=10)
+        win = int(window)
+        closes, names, source_label = _similarity_universe()
+        range_start = range_end = None
+        k_start = (date.today() - pd.Timedelta(days=max(420, int(win * 2)))).isoformat()
+        k_end = date.today().isoformat()
+        # 圈定：默认最近 win 个交易日的近似日历窗，可改
+        c1, c2 = st.columns(2)
+        with c1:
+            mark_start = st.date_input("圈定起点（图上黄带）", value=date.today() - pd.Timedelta(days=int(win * 1.6)).to_pytimedelta())
+        with c2:
+            mark_end = st.date_input("圈定终点（图上黄带）", value=date.today())
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            mark_start = st.date_input("固定起点", value=date(2026, 8, 1))
+        with c2:
+            mark_end = st.date_input("固定终点", value=date(2026, 9, 1))
+        if mark_end < mark_start:
+            st.warning("终点早于起点。"); return
+        range_start, range_end = mark_start.isoformat(), mark_end.isoformat()
+        closes, names, source_label = _similarity_universe(start=range_start, end=range_end)
+        win = None  # use full sliced series
+        k_start, k_end = range_start, range_end
+
     if not closes:
-        st.info("暂无 A 股历史数据。运行 scripts/fetch-baostock-universe.py 或先积累 tvscreener 快照。")
+        st.info(f"暂无可用序列。{source_label or '缺源'}。缺则空，不编 OHLC。")
         return
+
     def _label(code: str) -> str:
         name = names.get(code) or ""
         return f"{name} ({code})" if name else code
+
     all_codes = sorted(closes.keys())
     default = next((c for c in ("sh.601899", "SSE:601899") if c in closes), all_codes[0])
-    ref = st.selectbox("参考标的", all_codes, index=all_codes.index(default), format_func=_label)
-    window = st.number_input("对比窗口（交易日）", min_value=10, max_value=250, value=90, step=10)
-    top_n = st.slider("显示结果数", 5, 50, 20, step=5)
-    win = int(window)
-    eligible = {c: s for c, s in closes.items() if len(s) >= win}
+    ref = st.selectbox("参考标的（模板）", all_codes, index=all_codes.index(default), format_func=_label)
+
+    # Template K — baostock daily_kline only
+    _sec("模板股日 K")
+    # For trailing mode, show a wider K then highlight mark band; for fixed, K == scan window
+    ohlc = _template_ohlc(ref, k_start, k_end)
+    _render_template_kline(ohlc, mark_start, mark_end, title=_label(ref))
+
+    if win is not None:
+        eligible = {c: s for c, s in closes.items() if len(s) >= win}
+        need = win
+    else:
+        ref_n = len(closes.get(ref, []))
+        need = max(ref_n, 10)
+        eligible = {c: s for c, s in closes.items() if len(s) >= need}
     skipped = len(closes) - len(eligible)
-    st.caption(f"数据源: {source_label} · 丢掉 {skipped} 只不足 {win} 根的短序列（新股上市未满窗口）")
+    st.caption(
+        f"数据源: {source_label} · 丢掉 {skipped} 只不足窗口的短序列（新股/停牌缺交易日，不补）"
+        + (f" · 窗口={need} 根" if need else "")
+    )
     if ref not in eligible:
-        st.info(f"参考标的窗口内不足 {win} 根，缩小窗口或换一只。"); return
+        st.info(f"参考标的窗口内不足 {need} 根，缩小窗口或换一只 / 换区间。")
+        return
     if not st.button("运行相似度扫描", width="stretch"):
         return
     with st.spinner(f"正在扫描 {len(eligible)} 只满窗口标的…"):
-        ranked = rank_similar(eligible[ref], eligible, window=win)
+        if win is not None:
+            ranked = rank_similar(eligible[ref], eligible, window=win)
+            slice_n = win
+        else:
+            ranked = rank_similar(eligible[ref], eligible, window=None)
+            slice_n = len(eligible[ref])
     ranked = [r for r in ranked if r[0] != ref][: top_n]
     if not ranked:
-        st.caption("无有效候选（短序列已丢掉）"); return
-    rows = [{"排名": i, "代码": code, "名称": names.get(code, ""), "DTW 距离": round(dist, 4)} for i, (code, dist) in enumerate(ranked, start=1)]
+        st.caption("无有效候选（短序列已丢掉）")
+        return
+    rows = [
+        {"排名": i, "代码": code, "名称": names.get(code, ""), "DTW 距离": round(dist, 4)}
+        for i, (code, dist) in enumerate(ranked, start=1)
+    ]
     _show(_style_base(pd.DataFrame(rows).style.hide(axis="index")), width="stretch")
+    st.caption("DTW 距离只是形态观察，不是选股结论，不是买卖信号。")
     _sec("归一化走势叠加")
     chart_rows = []
     for code in [ref] + [r[0] for r in ranked[:5]]:
-        series = normalize(eligible[code][-win:])
-        chart_rows.extend({"t": t, "value": float(v), "series": names.get(code) or code} for t, v in enumerate(series))
+        series = normalize(eligible[code][-slice_n:])
+        chart_rows.extend(
+            {"t": i, "value": float(v), "series": names.get(code) or code}
+            for i, v in enumerate(series)
+        )
     line = alt.Chart(pd.DataFrame(chart_rows)).mark_line(strokeWidth=2).encode(
-        x=alt.X("t:Q", title="窗口内第 N 个交易日"), y=alt.Y("value:Q", title="归一化收盘 (0–1)"),
-        color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top")), tooltip=["series", "t", "value"],
+        x=alt.X("t:Q", title="窗口内第 N 个交易日"),
+        y=alt.Y("value:Q", title="归一化收盘 (0–1)"),
+        color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top")),
+        tooltip=["series", "t", "value"],
     ).properties(height=300, width=980)
     st.altair_chart(_alt_dark(line), width="stretch")
 

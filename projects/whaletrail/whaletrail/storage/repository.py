@@ -286,6 +286,44 @@ class Repository:
             out.setdefault(r["code"], []).append(float(r["close"]))
         return out
 
+    def daily_ohlc(
+        self,
+        code: str,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> list[dict]:
+        """Return OHLC rows for *code* ordered by ``trade_date``.
+
+        Used by the similar-stock template K chart. Empty list on miss —
+        callers must not invent bars. Calendar is whatever was stored from
+        baostock (exchange sessions), not filled natural days.
+        """
+        query = (
+            "SELECT trade_date, open, high, low, close, volume "
+            "FROM daily_kline WHERE code = ?"
+        )
+        params: list = [code]
+        if start:
+            query += " AND trade_date >= ?"
+            params.append(start)
+        if end:
+            query += " AND trade_date <= ?"
+            params.append(end)
+        query += " ORDER BY trade_date"
+        rows: list[dict] = []
+        for r in self.conn.execute(query, params):
+            rows.append(
+                {
+                    "trade_date": r["trade_date"],
+                    "open": r["open"],
+                    "high": r["high"],
+                    "low": r["low"],
+                    "close": r["close"],
+                    "volume": r["volume"],
+                }
+            )
+        return rows
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
