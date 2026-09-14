@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """WhaleTrail Dashboard — read-only five-tab monitor.
 
-Tabs: 黄金 paper / A股 paper / 相似选股 / KOL 评测 / 跟庄复盘.
+Pages: 黄金 paper / A股 paper / 相似选股 / KOL 评测 / 跟庄复盘.
+Deep links: /?page=gold|ashare|similar|kol|genzhuang
 """
 from __future__ import annotations
 
@@ -998,9 +999,45 @@ with tb1:
 with tb2:
     if st.button("刷新"):
         st.cache_data.clear(); st.rerun()
-PAGES = {"黄金 paper": page_gold_paper, "A股 paper": page_ashare_paper, "相似选股": page_similar, "KOL 评测": page_kol, "跟庄复盘": page_genzhuang}
-tabs = st.tabs(list(PAGES))
-for tab, fn in zip(tabs, PAGES.values()):
-    with tab:
-        fn()
+# Deep-link keys (同域 query): /?page=gold|ashare|similar|kol|genzhuang
+PAGE_DEFS: list[tuple[str, str, Any]] = [
+    ("gold", "黄金 paper", page_gold_paper),
+    ("ashare", "A股 paper", page_ashare_paper),
+    ("similar", "相似选股", page_similar),
+    ("kol", "KOL 评测", page_kol),
+    ("genzhuang", "跟庄复盘", page_genzhuang),
+]
+PAGE_KEYS = [k for k, _, _ in PAGE_DEFS]
+PAGE_LABEL = {k: lab for k, lab, _ in PAGE_DEFS}
+PAGE_FN = {k: fn for k, _, fn in PAGE_DEFS}
+
+def _nav_on_change() -> None:
+    key = st.session_state.get("wt_nav")
+    if key in PAGE_KEYS:
+        st.query_params["page"] = key
+
+_raw = st.query_params.get("page", "gold")
+if isinstance(_raw, (list, tuple)):
+    _raw = _raw[0] if _raw else "gold"
+_qp = str(_raw or "gold").strip().lower()
+if _qp not in PAGE_KEYS:
+    _qp = "gold"
+
+if "wt_nav_init" not in st.session_state:
+    st.session_state["wt_nav"] = _qp
+    st.session_state["wt_nav_init"] = True
+    st.query_params["page"] = _qp
+
+st.segmented_control(
+    "页面",
+    options=PAGE_KEYS,
+    format_func=lambda k: PAGE_LABEL[k],
+    key="wt_nav",
+    on_change=_nav_on_change,
+    label_visibility="collapsed",
+)
+_nav = st.session_state.get("wt_nav", _qp)
+if _nav not in PAGE_KEYS:
+    _nav = "gold"
+PAGE_FN[_nav]()
 _health_strip()
