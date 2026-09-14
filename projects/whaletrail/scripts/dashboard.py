@@ -827,7 +827,7 @@ def page_similar() -> None:
 
     mode = st.radio(
         "对比窗口模式",
-        ("当下往前（交易日根数）", "固定起止日（深交所交易日）"),
+        ("当下往前（交易日根数）", "固定起止日（A股交易日·沪深同步）"),
         horizontal=True,
     )
     top_n = st.slider("显示结果数", 5, 50, 20, step=5)
