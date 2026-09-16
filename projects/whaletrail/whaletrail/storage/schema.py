@@ -5,6 +5,11 @@ Tables
 - ``runs``          — one row per backtest run; stores parameters and summary metrics.
 - ``trades``        — every fill (executed trade) during a run.
 - ``portfolio_snapshots`` — daily equity/cash/positions snapshots.
+- ``quote_snapshots`` — tvscreener watchlist snapshots.
+- ``daily_kline``   — baostock A-share daily bars (similarity + extras).
+- ``ashare_universe`` — stock basic (ipo/status).
+- ``ashare_industry`` — 申万一级行业.
+- ``ashare_index_constituents`` — sz50 / hs300 / zz500 membership.
 """
 
 from __future__ import annotations
@@ -88,24 +93,53 @@ CREATE TABLE IF NOT EXISTS daily_kline (
     close           REAL,
     volume          REAL,
     amount          REAL,
+    turn            REAL,              -- 换手率 %；停牌为空
+    tradestatus     INTEGER,           -- 1 正常 / 0 停牌
+    pct_chg         REAL,
+    is_st           INTEGER,           -- 1 ST / 0 否
+    pe_ttm          REAL,
+    pb_mrq          REAL,
     PRIMARY KEY (code, trade_date)
 );
 CREATE INDEX IF NOT EXISTS idx_daily_kline_date ON daily_kline(trade_date);
 
 CREATE TABLE IF NOT EXISTS ashare_universe (
     code            TEXT    PRIMARY KEY,  -- baostock code
-    name            TEXT
+    name            TEXT,
+    ipo_date        TEXT,
+    out_date        TEXT,
+    stock_type      TEXT,              -- baostock type: 1=股票
+    status          TEXT               -- 1=上市 0=退市
+);
+
+CREATE TABLE IF NOT EXISTS ashare_industry (
+    code            TEXT    PRIMARY KEY,
+    name            TEXT,
+    industry        TEXT,              -- 申万一级
+    classification  TEXT,              -- e.g. 申万一级行业
+    update_date     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ashare_index_constituents (
+    index_id        TEXT    NOT NULL,  -- sz50 / hs300 / zz500
+    code            TEXT    NOT NULL,
+    name            TEXT,
+    update_date     TEXT,
+    PRIMARY KEY (index_id, code)
 );
 """
 
 
-def _ensure_snapshot_ohlc(conn: sqlite3.Connection) -> None:
-    """Lightweight migration: add open/high/low to pre-existing DBs."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(quote_snapshots)")}
-    for col in ("open", "high", "low"):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE quote_snapshots ADD COLUMN {col} REAL")
-    conn.commit()
+def _ensure_columns(
+    conn: sqlite3.Connection, table: str, columns: list[tuple[str, str]]
+) -> None:
+    """Add missing columns on a pre-existing table (CREATE IF NOT EXISTS is a no-op)."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if not existing:
+        return
+    for name, decl in columns:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def create_tables(db_path: str | Path) -> sqlite3.Connection:
@@ -127,6 +161,28 @@ def create_tables(db_path: str | Path) -> sqlite3.Connection:
 
     conn = sqlite3.connect(str(db_path))
     conn.executescript(SCHEMA_SQL)
-    _ensure_snapshot_ohlc(conn)
+    _ensure_columns(conn, "quote_snapshots", [("open", "REAL"), ("high", "REAL"), ("low", "REAL")])
+    _ensure_columns(
+        conn,
+        "daily_kline",
+        [
+            ("turn", "REAL"),
+            ("tradestatus", "INTEGER"),
+            ("pct_chg", "REAL"),
+            ("is_st", "INTEGER"),
+            ("pe_ttm", "REAL"),
+            ("pb_mrq", "REAL"),
+        ],
+    )
+    _ensure_columns(
+        conn,
+        "ashare_universe",
+        [
+            ("ipo_date", "TEXT"),
+            ("out_date", "TEXT"),
+            ("stock_type", "TEXT"),
+            ("status", "TEXT"),
+        ],
+    )
     conn.commit()
     return conn

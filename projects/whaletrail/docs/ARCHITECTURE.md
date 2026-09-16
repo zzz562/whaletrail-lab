@@ -6,12 +6,14 @@
 
 ```
 whaletrail/
-├── data/          DataLayer 门面 + yfinance(历史日线) + intraday(5m/10m/1h) + tvscreener(快照) + Parquet 缓存 + watchlist + A股交易日历(trading_calendar)
+├── data/          DataLayer 门面 + yfinance(历史日线) + intraday(5m/10m/1h) + tvscreener(快照) + baostock(A股全市场日K+静态) + Parquet 缓存 + watchlist + A股交易日历(trading_calendar)
 ├── engine/        事件驱动回测（Backtester / Broker / Account / Clock / Event）+ 实时交易时段检查（session）
 ├── strategy/      策略基类 + 注册表 + 6 个策略
 ├── metrics/       收益/回撤/夏普/胜率/盈亏比（FIFO 计算 PnL）
 ├── reporting/     watchlist Markdown 报表
-├── storage/       SQLite（runs / trades / portfolio_snapshots / quote_snapshots）
+├── storage/       SQLite（runs / trades / snapshots / daily_kline / ashare_*）
+├── similarity.py  收盘 DTW + 换手对齐 L1 + 分位融合（rank_multi）
+├── chips.py       窗口内 CYQ 直方图 + 1 维 Wasserstein
 └── indicators.py  共享指标（sma / atr / cross_signal）
 ```
 
@@ -25,17 +27,21 @@ yfinance ─► YFinanceSource ─► ParquetCache(data_cache/) ─► Backteste
 
 tvscreener ─► TVScreenerSource ─► quote_snapshots ─► build_daily_history ─► ashare-paper.py
                                           └────────► watchlist_report.md
+
+baostock  ─► BaostockSource ─► daily_kline / ashare_universe / ashare_industry / ashare_index_constituents
+                                          └────────► dashboard 相似选股（daily_bars → rank_multi：K/换手/筹码）
 ```
 
 ## 数据层组合
 
-两个数据源按角色组合，不做朴素 fallback：
+数据源按角色组合，不做朴素 fallback：
 
 | 用途 | 主源 | 说明 |
 |------|------|------|
 | 历史日线（回测） | yfinance + Parquet 缓存 | tvscreener 不提供历史；缓存做覆盖检查 + 头尾补缺口，减少 yfinance 配额 |
 | intraday 历史（5m/10m/1h 回测） | yfinance + Parquet 累积 | `data/intraday.py`；yfinance 5m 上限 60 天，缓存 key `<symbol>_<interval>` 跨窗口累积；10m 由 5m 重采样 |
-| 实时快照 / watchlist / A股 | tvscreener | `get_quotes`；快照积累进 `quote_snapshots`，经 `build_daily_history` 生成日线 |
+| 实时快照 / watchlist / A股 paper | tvscreener | `get_quotes`；快照积累进 `quote_snapshots`，经 `build_daily_history` 生成日线 |
+| A股全市场日 K / 相似选股 / 行业 | baostock | `daily_kline`（不复权 OHLCV + turn/ST/PE/PB）；`ashare_universe`；申万一级；sz50/hs300/zz500。无概念板块。Mac mini 直连 |
 | paper-live 5m 信号 | yfinance | 实时扫描仍走 yfinance（`intraday.fetch_bars`，不写缓存） |
 
 入口：`whaletrail/data/layer.py` 的 `DataLayer`。快照源的 yfinance fallback 是待办（需 tv/yahoo 符号映射）。
@@ -79,7 +85,7 @@ A 股低频率 paper 入口：`scripts/ashare-paper.py`（SMA 20/50 昨收信号
 
 ## 存储
 
-- SQLite `results/whaletrail.db`（WAL）：`runs`、`trades`、`portfolio_snapshots`、`quote_snapshots`。
+- SQLite `results/whaletrail.db`（WAL）：`runs`、`trades`、`portfolio_snapshots`、`quote_snapshots`、`daily_kline`、`ashare_universe`、`ashare_industry`、`ashare_index_constituents`。
 - `runs.symbols`、`metrics_json`、`positions_json`、`raw_json` 为 JSON 文本。
 - 回测结果 JSON：`trades[]`（含 FIFO 计算的 `pnl`）、`equity_curve[]`、`final_equity`、`total_commission`、`total_return`、`metrics`、`strategy`、`symbol`、`role`、`market`、`start`、`end`。
 

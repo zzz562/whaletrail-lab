@@ -1,72 +1,113 @@
 #!/usr/bin/env python3
-"""A-share chart-similarity scan (DTW) over accumulated tvscreener history.
+"""A-share fused similarity scan over baostock daily_kline.
 
 Usage:
-  python scripts/ashare-similar.py --symbol SSE:601899
-  python scripts/ashare-similar.py --symbol SSE:601899 --window 90 --top 5
+  python scripts/ashare-similar.py --symbol sh.601899
+  python scripts/ashare-similar.py --symbol SSE:601899 --window 90 --top 20
 
-Phase 0 of the "find similar charts" feature: pick a reference stock and rank
-the rest of the A-share watchlist by how closely their recent close series
-resembles the reference.  Reads the same accumulated snapshot history as
-``ashare-paper.py`` (``quote_snapshots`` → ``build_daily_history``), so it
-works today on the 8-stock watchlist with no new data source.
-
-Whole-market scanning (Phase 1) replaces the ``build_daily_history`` source
-with the baostock ``daily_kline`` table; the ranking logic stays the same.
+Ranks the whole-market universe by kline DTW + turnover DTW + chip
+Wasserstein (percentile fusion).  Observation only — not a trade list.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from whaletrail.data.history import build_daily_history
-from whaletrail.data.watchlist import load_watchlist
-from whaletrail.similarity import rank_similar
+from whaletrail.data.baostock_source import to_baostock_code
+from whaletrail.similarity import DEFAULT_WEIGHTS, rank_multi
+from whaletrail.storage.repository import Repository
 
 DB_PATH = ROOT / "results" / "whaletrail.db"
-WATCHLIST = ROOT / "config" / "watchlist.yaml"
+
+
+def _parse_weights(raw: str) -> dict[str, float]:
+    parts = [p.strip() for p in raw.split(",")]
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError("weights must be k,v,c e.g. 0.5,0.3,0.2")
+    k, v, c = (float(x) for x in parts)
+    return {"kline": k, "volume": v, "chip": c}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--symbol", required=True, help="Reference tvscreener symbol, e.g. SSE:601899")
-    parser.add_argument("--window", type=int, default=90, help="Lookback days (default 90)")
-    parser.add_argument("--top", type=int, default=20, help="Number of matches to show (default 20)")
-    parser.add_argument("--db", default=str(DB_PATH), help="SQLite path (default results/whaletrail.db)")
+    parser.add_argument("--symbol", required=True, help="Reference, e.g. sh.601899 or SSE:601899")
+    parser.add_argument("--window", type=int, default=90, help="Lookback trading days (default 90)")
+    parser.add_argument("--top", type=int, default=20, help="Rows to print (default 20)")
+    parser.add_argument(
+        "--weights",
+        type=_parse_weights,
+        default=DEFAULT_WEIGHTS,
+        help="kline,volume,chip weights (default 0.5,0.3,0.2)",
+    )
+    parser.add_argument("--include-st", action="store_true", help="Keep ST names in the ranking")
+    parser.add_argument("--db", default=str(DB_PATH), help="SQLite path")
     args = parser.parse_args()
 
-    items = load_watchlist(WATCHLIST)
-    a_items = [i for i in items if i.market == "china" and i.tradable]
-    if args.symbol not in {i.tv_symbol for i in a_items}:
-        print(f"⚠️ {args.symbol} 不在 A 股 watchlist 中（market=china, tradable=true）")
+    try:
+        code = to_baostock_code(args.symbol)
+    except ValueError:
+        code = args.symbol.strip().lower()
+
+    start = (date.today() - timedelta(days=max(420, int(args.window * 2)))).isoformat()
+    repo = Repository(args.db)
+    names = repo.universe_names()
+    bars = repo.daily_bars(start=start)
+    repo.close()
+
+    if code not in bars:
+        print(f"⚠️ {code} 不在 daily_kline（{start}→今）。先在 Mac mini 跑 fetch-baostock-universe.py")
         sys.exit(1)
 
-    series: dict[str, list[float]] = {}
-    for item in a_items:
-        hist = build_daily_history(args.db, item.tv_symbol)
-        if hist.empty or len(hist) < args.window:
-            print(f"⚠️ {item.name} ({item.tv_symbol}): 历史不足 {len(hist)} 天，跳过")
-            continue
-        series[item.tv_symbol] = [float(x) for x in hist["close"].tolist()]
+    eligible = {c: b for c, b in bars.items() if len(b.get("close") or []) >= args.window}
+    if code not in eligible:
+        print(f"⚠️ {code} 窗口内不足 {args.window} 根")
+        sys.exit(1)
 
-    target = series[args.symbol]
-    ranked = rank_similar(target, series, window=args.window)
-    ranked = [r for r in ranked if r[0] != args.symbol]  # exclude self
+    t0 = time.perf_counter()
+    matches, used = rank_multi(
+        eligible[code],
+        eligible,
+        window=args.window,
+        weights=args.weights,
+        exclude_st=not args.include_st,
+    )
+    elapsed = time.perf_counter() - t0
+    matches = [m for m in matches if m.code != code][: args.top]
 
-    name_by_tv = {i.tv_symbol: i.name for i in a_items}
-    ref_name = name_by_tv.get(args.symbol, args.symbol)
-    print(f"\n🐋 相似走势 · 参考 {ref_name} ({args.symbol}) · 近 {args.window} 日")
-    print(f"{'排名':<4}{'代码':<14}{'名称':<10}{'DTW 距离':>12}")
-    print("-" * 44)
-    for rank, (tv, dist) in enumerate(ranked[: args.top], start=1):
-        print(f"{rank:<4}{tv:<14}{name_by_tv.get(tv, ''):<10}{dist:>12.4f}")
-    if not ranked:
+    ref_name = names.get(code, "")
+    wtxt = " ".join(f"{k}={v:.2f}" for k, v in used.items())
+    print(
+        f"\n🐋 相似选股 · 参考 {ref_name} ({code}) · 近 {args.window} 日"
+        f" · {len(eligible)} 只满窗口 · {elapsed:.2f}s"
+    )
+    print(f"权重 {wtxt}")
+    print(
+        f"{'排名':<4}{'代码':<12}{'名称':<10}"
+        f"{'综合':>8}{'K':>10}{'量':>10}{'筹':>10}{'获利':>8}{'集中':>8}"
+    )
+    print("-" * 82)
+    for i, m in enumerate(matches, start=1):
+        d_vol = f"{m.d_vol:.4f}" if m.d_vol is not None and np_finite(m.d_vol) else "—"
+        d_chip = f"{m.d_chip:.4f}" if m.d_chip is not None and np_finite(m.d_chip) else "—"
+        wr = f"{m.winner_ratio:.2f}" if m.winner_ratio is not None else "—"
+        conc = f"{m.concentration:.2f}" if m.concentration is not None else "—"
+        print(
+            f"{i:<4}{m.code:<12}{(names.get(m.code) or '')[:10]:<10}"
+            f"{m.fused:8.4f}{m.d_kline:10.4f}{d_vol:>10}{d_chip:>10}{wr:>8}{conc:>8}"
+        )
+    if not matches:
         print("（无候选）")
+
+
+def np_finite(x: float) -> bool:
+    return x == x and x != float("inf") and x != float("-inf")
 
 
 if __name__ == "__main__":

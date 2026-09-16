@@ -1,6 +1,6 @@
 # WhaleTrail Scope — 基建定界
 
-> 更新：2026-09-03
+> 更新：2026-09-16
 
 ## 一句话
 
@@ -66,6 +66,8 @@ yfinance ──► ParquetCache ──► Backtester ──► results/*.json
 17. A股相似选股（DTW）+ baostock 全市场日线（2026-09-01）：移植 ValarmClub 的「找相似走势」到 WhaleTrail（`whaletrail/similarity.py`，纯 NumPy 重写，不引入 dtaidistance），看板新增「🔍 相似选股」页（`scripts/dashboard.py`）。数据源用 baostock（免费无 token、国内直连，非 akshare/东财，不推翻决策 1），全市场日线落 SQLite `daily_kline`（`whaletrail/data/baostock_source.py` + `scripts/fetch-baostock-universe.py`）。定位是**读线**：形态筛选 + 观察，不是交易信号、不扩交易范围（决策 16 的两本薄账不变），与 `whale_flag`（量价异常）叠加使用；tvscreener 快照路径（决策 5）继续承担 8 只 paper。详见 `notes/2026-09-01-ashare-similarity-dtw.md`。
 18. 看板收成四页（2026-09-02）：Streamlit 是人看的只读 UI，侧栏仅 **Paper** / **相似选股** / **KOL 评测** / **跟庄复盘**。Telegram / OpenClaw 不走主路径（进程不停）。**跟庄 ≠ KOL**：跟庄只表示现有 watchlist 上的标签「观察 / 接近 / 触发」，用已收盘日 K，不是当日阴、不是左压，不与 KOL 混页；KOL 评测是 A 股荐股推文 vs 事后对照（18 账号冻结），文案不称跟庄。Paper 黄金账是 GLD `gold_sma` vs 买入持有 vs SPY；`gold_sma` 弱于 B&H，价值在压回撤；5m/live 仅观察；A 股 paper 是 15:30 日频。GLD / GC=F 只作监控/对照，须标「不是银行牌价 / 不是纸黄金账」。A 股阴线高低点用 baostock 复权日 K、仅 watchlist；tvscreener 是快照，不是已完成日线；交易日历 = 深交所官方。**仍未决（本次不改、不假装已定）：** 纸黄金独立 paper 的数据源与日切；`watchlist.yaml`；`yin-right.json`（不新建）。代码：`scripts/dashboard.py`、`docs/DASHBOARD.md`。
 19. 看板收成五页（2026-09-03）：主区 `st.tabs`（非侧栏）名字严格为 **黄金 Paper** / **A股 Paper** / **相似选股** / **KOL 评测** / **跟庄复盘**；同一 URL，不按 UA 分端。黄金账 = GLD 日线 `gold_sma` vs 买入持有 vs SPY；金价对照 = GC=F 日线。两份 yfinance Parquet 不得混用，禁止把 GC=F 价格写入 GLD 缓存。黄金两列日历 = 美股交易日，不是北京银行日切，不是深交所。A股 Paper = 仅 15:30 paper 账（tvscreener 快照 + 深交所日历）。「观察 / 接近 / 触发」只留在跟庄复盘（baostock 复权日 K、仅现有 watchlist）。纸黄金 / AU9999 本轮无源、不上板、不冒充。GLD / GC=F 文案须标「不是银行牌价 / 不是境内可玩」。**仍未决（不假装已定）：** 纸黄金独立 paper 的数据源与日切；`watchlist.yaml`；`yin-right.json`（不新建）。代码：`scripts/dashboard.py`、`docs/DASHBOARD.md`。
+20. baostock 日 K 加列 + 静态快照（2026-09-16）：相似选股仍走 baostock，不接东财/akshare/Tushare。`daily_kline` 在 OHLCV/amount 之外补 `turn`（换手）、`tradestatus`、`pct_chg`、`is_st`、`pe_ttm`、`pb_mrq`，供后续量柱/筹码（本地用 OHLC+turn 算）/ST·估值过滤；同脚本落 `ashare_universe`（上市日/退市/状态）、`ashare_industry`（**仅申万一级**，无概念板块）、`ashare_index_constituents`（上证50/沪深300/中证500）。季频财务、前复权第二套日 K、概念/龙虎榜本次不拉。旧行 `tradestatus IS NULL` 视为缺字段，拉取脚本自动从缺口日重拉（`--skip-refill` 可关）。代码：`whaletrail/data/baostock_source.py`、`whaletrail/storage/schema.py`、`scripts/fetch-baostock-universe.py`。详见 `notes/2026-09-16-baostock-kline-extras.md`。
+21. 相似选股三通道拟合（2026-09-16）：K 线 DTW + 换手对齐 L1 + 窗口内本地 CYQ（Wasserstein）按全市场分位加权，默认 0.50/0.30/0.20，看板可调；缺换手则关掉筹码通道。量不用无约束 DTW（会把不同日的放量尖峰拉成一样）。仍是读线观察，不扩可交易名单，不拉东财筹码、不复权第二套日 K、不落筹码表。代码：`whaletrail/chips.py`、`whaletrail/similarity.py`（`rank_multi`）、`scripts/dashboard.py`、`scripts/ashare-similar.py`。详见 `notes/2026-09-16-similarity-volume-chip.md`。
 
 ## 决策记录规范
 

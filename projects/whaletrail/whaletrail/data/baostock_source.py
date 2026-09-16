@@ -1,9 +1,12 @@
 """Baostock (证券宝) A-share daily-bar source.
 
-Free, tokenless A-share daily OHLCV (SH/SZ/BJ, 1990→present).  This fills the
-whole-market historical-bar gap that tvscreener cannot: the TradingView
-scanner serves current snapshots only, so the DTW chart-similarity scan needs
-this source to get a full universe of trailing close series.
+Free, tokenless A-share daily OHLCV + extras (SH/SZ/BJ, 1990→present).  This
+fills the whole-market historical-bar gap that tvscreener cannot: the
+TradingView scanner serves current snapshots only, so the DTW chart-similarity
+scan needs this source to get a full universe of trailing close series.
+Extra daily fields (turn, tradestatus, ST, PE/PB) and cheap snapshots
+(stock basic, 申万一级, sz50/hs300/zz500) come from the same login.
+baostock has no concept/theme boards.
 
 Unlike yfinance (gold/US, Parquet cache), the bulk path here writes to the
 SQLite ``daily_kline`` table because the similarity scan is cross-sectional
@@ -30,8 +33,21 @@ _OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 # baostock daily fields we persist.  adjustflag "3" = unadjusted (不复权),
 # matching ValarmClub's Tushare-unadjusted input; see notes/ for the qfq
 # trade-off and how to switch.
-_FIELDS = "date,code,open,high,low,close,volume,amount"
+# Extra vs the original OHLCV+amount pull: turn / tradestatus / pctChg / isST /
+# peTTM / pbMRQ — same query_history_k_data_plus call, no second source.
+_FIELDS = (
+    "date,code,open,high,low,close,volume,amount,"
+    "turn,tradestatus,pctChg,isST,peTTM,pbMRQ"
+)
 _ADJUST_FLAG = "3"
+
+# Snapshot index-constituent APIs (latest membership, not point-in-time history).
+INDEX_IDS = ("sz50", "hs300", "zz500")
+_INDEX_QUERY = {
+    "sz50": "query_sz50_stocks",
+    "hs300": "query_hs300_stocks",
+    "zz500": "query_zz500_stocks",
+}
 
 
 def to_baostock_code(symbol: str) -> str:
@@ -72,23 +88,42 @@ def from_baostock_code(code: str) -> str:
     return code
 
 
-def _to_ohlcv(df: pd.DataFrame, keep_amount: bool = False) -> pd.DataFrame:
-    """Normalise a baostock result frame to OHLCV(+amount) with a date index."""
+def _numeric(df: pd.DataFrame, col: str) -> pd.Series:
+    """Coerce a baostock column to float; empty string (停牌 turn 等) → NaN."""
+    if col not in df.columns:
+        return pd.Series(float("nan"), index=df.index, dtype="float64")
+    return pd.to_numeric(df[col].replace("", pd.NA), errors="coerce")
+
+
+def _to_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalise a baostock daily frame to OHLCV + extras, date index."""
     out = pd.DataFrame(
         {
-            "open": pd.to_numeric(df["open"], errors="coerce"),
-            "high": pd.to_numeric(df["high"], errors="coerce"),
-            "low": pd.to_numeric(df["low"], errors="coerce"),
-            "close": pd.to_numeric(df["close"], errors="coerce"),
-            "volume": pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype("int64"),
+            "open": _numeric(df, "open"),
+            "high": _numeric(df, "high"),
+            "low": _numeric(df, "low"),
+            "close": _numeric(df, "close"),
+            "volume": _numeric(df, "volume").fillna(0).astype("int64"),
+            "amount": _numeric(df, "amount"),
+            "turn": _numeric(df, "turn"),
+            "tradestatus": _numeric(df, "tradestatus"),
+            "pct_chg": _numeric(df, "pctChg"),
+            "is_st": _numeric(df, "isST"),
+            "pe_ttm": _numeric(df, "peTTM"),
+            "pb_mrq": _numeric(df, "pbMRQ"),
         }
     )
-    if keep_amount:
-        out["amount"] = pd.to_numeric(df["amount"], errors="coerce")
     out.index = pd.to_datetime(df["date"].to_numpy())
     out.index.name = "date"
     out = out.dropna(subset=["open", "high", "low", "close"]).sort_index()
     return out
+
+
+def _blank(value) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
 
 
 def _result_frame(rs) -> pd.DataFrame:
@@ -160,6 +195,14 @@ class BaostockSource(DataSource):
         Uses baostock's ``query_stock_basic`` (``type=1`` 股票, ``status=1``
         上市), which carries names and needs no trading-day argument.
         """
+        return [(r["code"], r["name"]) for r in self.fetch_stock_basic(listed_only=True)]
+
+    def fetch_stock_basic(self, listed_only: bool = False) -> list[dict]:
+        """Return stock rows from ``query_stock_basic`` (``type=1`` 股票).
+
+        Includes delisted names unless *listed_only*.  Fields: ``code``,
+        ``name``, ``ipo_date``, ``out_date``, ``stock_type``, ``status``.
+        """
         self._ensure_login()
         bs = self._import()
         rs = bs.query_stock_basic()
@@ -169,13 +212,90 @@ class BaostockSource(DataSource):
         if df.empty:
             return []
         if "type" in df.columns:
-            df = df[df["type"] == "1"]
-        if "status" in df.columns:
-            df = df[df["status"] == "1"]
-        return list(zip(df["code"].astype(str).tolist(), df["code_name"].astype(str).tolist()))
+            df = df[df["type"].astype(str) == "1"]
+        if listed_only and "status" in df.columns:
+            df = df[df["status"].astype(str) == "1"]
+        rows: list[dict] = []
+        for rec in df.to_dict(orient="records"):
+            code = str(rec.get("code", "")).strip()
+            if not code:
+                continue
+            rows.append(
+                {
+                    "code": code,
+                    "name": _blank(rec.get("code_name")) or "",
+                    "ipo_date": _blank(rec.get("ipoDate")),
+                    "out_date": _blank(rec.get("outDate")),
+                    "stock_type": _blank(rec.get("type")),
+                    "status": _blank(rec.get("status")),
+                }
+            )
+        return rows
+
+    def fetch_industry(self) -> list[dict]:
+        """Latest 申万一级 industry map (``query_stock_industry``).
+
+        baostock has no concept/theme boards — only this classification.
+        Weekly refresh on the server (Monday).
+        """
+        self._ensure_login()
+        bs = self._import()
+        rs = bs.query_stock_industry()
+        if rs.error_code != "0":
+            raise RuntimeError(
+                f"baostock query_stock_industry failed: {rs.error_code} {rs.error_msg}"
+            )
+        df = _result_frame(rs)
+        if df.empty:
+            return []
+        rows: list[dict] = []
+        for rec in df.to_dict(orient="records"):
+            code = str(rec.get("code", "")).strip()
+            if not code:
+                continue
+            rows.append(
+                {
+                    "code": code,
+                    "name": _blank(rec.get("code_name")) or "",
+                    "industry": _blank(rec.get("industry")),
+                    "classification": _blank(rec.get("industryClassification")),
+                    "update_date": _blank(rec.get("updateDate")),
+                }
+            )
+        return rows
+
+    def fetch_index_constituents(self, index_id: str) -> list[dict]:
+        """Latest constituents for ``sz50`` / ``hs300`` / ``zz500``."""
+        method = _INDEX_QUERY.get(index_id)
+        if method is None:
+            raise ValueError(f"Unknown index_id {index_id!r}; expected one of {INDEX_IDS}")
+        self._ensure_login()
+        bs = self._import()
+        fn = getattr(bs, method, None)
+        if fn is None:
+            raise RuntimeError(f"baostock has no {method}")
+        rs = fn()
+        if rs.error_code != "0":
+            raise RuntimeError(f"baostock {method} failed: {rs.error_code} {rs.error_msg}")
+        df = _result_frame(rs)
+        if df.empty:
+            return []
+        rows: list[dict] = []
+        for rec in df.to_dict(orient="records"):
+            code = str(rec.get("code", "")).strip()
+            if not code:
+                continue
+            rows.append(
+                {
+                    "code": code,
+                    "name": _blank(rec.get("code_name")) or "",
+                    "update_date": _blank(rec.get("updateDate")),
+                }
+            )
+        return rows
 
     def fetch_daily(self, code: str, start: date, end: date) -> pd.DataFrame:
-        """Fetch daily bars for one baostock ``code`` as an OHLCV DataFrame."""
+        """Fetch daily bars for one baostock ``code`` as an OHLCV+extras DataFrame."""
         self._ensure_login()
         bs = self._import()
         rs = bs.query_history_k_data_plus(
@@ -192,4 +312,4 @@ class BaostockSource(DataSource):
         df = _result_frame(rs)
         if df.empty:
             return pd.DataFrame()
-        return _to_ohlcv(df, keep_amount=True)
+        return _to_daily(df)

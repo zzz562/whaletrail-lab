@@ -30,7 +30,7 @@
 |----|--------|--------|
 | **黄金 Paper** | 黄金账：`results/backtest_*.json` 中 GLD `gold_sma` + `data_cache/GLD.parquet` 的买入持有 + `data_cache/SPY.parquet` 对照；金价对照：`GC=F` 日线，**只读自己的缓存文件**（`data_cache/GC=F.parquet` 或 `GC_F.parquet`）；5m/live：`results/paper_live_state.json`（仅观察）。 | 缺回测 / 缺缓存 / 缺 live 则该节空渲染；GC=F 缓存缺失则对照列为空/null，不拿 GLD 价格冒充。 |
 | **A股 Paper** | 仅 `results/ashare_paper_state.json`（15:30 日频 paper 账：tvscreener 快照 + 深交所官方日历）。**不放「观察 / 接近 / 触发」**，不放黄金矿股。 | 缺 state 则空渲染，不编仓位与成交。 |
-| **相似选股** | SQLite `daily_kline`（baostock）优先，否则 watchlist 快照积累。DTW 观察，不是交易账，不扩可交易名单。 | 无历史则提示跑 `fetch-baostock-universe.py`。 |
+| **相似选股** | SQLite `daily_kline`（baostock）优先。K 线 DTW + 换手对齐 L1 + 窗口内本地 CYQ（Wasserstein）分位加权，默认 0.50/0.30/0.20，权重可调；表含综合分与三分量。模板区日 K+量柱+筹码直方图。不是交易账，不扩可交易名单。无换手则筹码通道关闭、空图。tvscreener 快照仅 trailing 兜底且只有 K/量。行业过滤未上 UI。 | 无历史则提示跑 `fetch-baostock-universe.py`。无 turn 则筹码空。 |
 | **KOL 评测** | 冻结 18 个 A 股荐股账号名册 + `results/` 里已存的荐股/事后对照（如 `kol_eval*.json`）。**不是跟庄。** 不调 live X API，不用黄金情绪 JSON 冒充评测。 | 无存储评测 → 空表，不编准确率。 |
 | **跟庄复盘** | 仅现有 A 股 watchlist（含黄金矿股）。标签只允许「观察 / 接近 / 触发」，来自已存结果（若有）。日 K 来自 baostock `daily_kline` 的**已收盘**复权 bar。tvscreener 快照不是已完成日线。 | 无已收盘日 K / 无已存标签 → 空或 null，不编 OHLC、不新建 `yin-right.json`。 |
 

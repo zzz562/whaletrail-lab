@@ -87,6 +87,15 @@ openclaw cron run whaletrail-sentiment   # 手动触发情绪扫描
 | `whaletrail-sentiment` | 每日 09:00 CST | X KOL 情绪扫描 → Telegram |
 | `whaletrail-ashare` | 工作日 15:30 CST | A股低频率 paper（`ashare-paper.py`，脚本内自检交易日历+时段）→ Telegram |
 
+## A股 baostock 全市场（相似选股数据）
+
+Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，脚本会自动从缺口日重拉。
+
+```bash
+cd ~/Projects/whaletrail-lab/projects/whaletrail
+.venv/bin/python scripts/fetch-baostock-universe.py
+```
+
 ## 日志
 
 ```bash

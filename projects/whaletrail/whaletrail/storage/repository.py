@@ -219,23 +219,88 @@ class Repository:
                 r.get("close"),
                 r.get("volume"),
                 r.get("amount"),
+                r.get("turn"),
+                r.get("tradestatus"),
+                r.get("pct_chg"),
+                r.get("is_st"),
+                r.get("pe_ttm"),
+                r.get("pb_mrq"),
             )
             for r in rows
         ]
         cur = self.conn.executemany(
             """INSERT OR REPLACE INTO daily_kline
-               (code, trade_date, open, high, low, close, volume, amount)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (code, trade_date, open, high, low, close, volume, amount,
+                turn, tradestatus, pct_chg, is_st, pe_ttm, pb_mrq)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             batch,
         )
         self.conn.commit()
         return cur.rowcount
 
-    def save_universe(self, rows: list[tuple[str, str]]) -> int:
-        """Upsert ``(code, name)`` pairs into ``ashare_universe``."""
+    def save_universe(self, rows: list[dict]) -> int:
+        """Upsert stock-basic rows into ``ashare_universe``."""
+        batch = [
+            (
+                r.get("code", ""),
+                r.get("name") or "",
+                r.get("ipo_date"),
+                r.get("out_date"),
+                r.get("stock_type"),
+                r.get("status"),
+            )
+            for r in rows
+        ]
         cur = self.conn.executemany(
-            "INSERT OR REPLACE INTO ashare_universe (code, name) VALUES (?, ?)",
-            rows,
+            """INSERT OR REPLACE INTO ashare_universe
+               (code, name, ipo_date, out_date, stock_type, status)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            batch,
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def save_industry(self, rows: list[dict]) -> int:
+        """Replace the 申万一级 map with the latest snapshot."""
+        self.conn.execute("DELETE FROM ashare_industry")
+        batch = [
+            (
+                r.get("code", ""),
+                r.get("name") or "",
+                r.get("industry"),
+                r.get("classification"),
+                r.get("update_date"),
+            )
+            for r in rows
+        ]
+        cur = self.conn.executemany(
+            """INSERT INTO ashare_industry
+               (code, name, industry, classification, update_date)
+               VALUES (?, ?, ?, ?, ?)""",
+            batch,
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def save_index_constituents(self, index_id: str, rows: list[dict]) -> int:
+        """Replace membership for one index (``sz50`` / ``hs300`` / ``zz500``)."""
+        self.conn.execute(
+            "DELETE FROM ashare_index_constituents WHERE index_id = ?", (index_id,)
+        )
+        batch = [
+            (
+                index_id,
+                r.get("code", ""),
+                r.get("name") or "",
+                r.get("update_date"),
+            )
+            for r in rows
+        ]
+        cur = self.conn.executemany(
+            """INSERT INTO ashare_index_constituents
+               (index_id, code, name, update_date)
+               VALUES (?, ?, ?, ?)""",
+            batch,
         )
         self.conn.commit()
         return cur.rowcount
@@ -247,12 +312,58 @@ class Repository:
         ).fetchall()
         return {r["code"]: r["name"] for r in rows}
 
+    def listed_universe(self) -> list[tuple[str, str]]:
+        """Listed (or pre-migration) stocks as ``(code, name)``."""
+        rows = self.conn.execute(
+            """SELECT code, name FROM ashare_universe
+               WHERE status = '1' OR status IS NULL
+               ORDER BY code"""
+        ).fetchall()
+        return [(r["code"], r["name"] or "") for r in rows]
+
+    def industry_map(self) -> dict[str, str]:
+        """Return ``{code: industry}`` for rows that have a non-empty industry."""
+        rows = self.conn.execute(
+            "SELECT code, industry FROM ashare_industry WHERE industry IS NOT NULL AND industry != ''"
+        ).fetchall()
+        return {r["code"]: r["industry"] for r in rows}
+
+    def index_members(self, index_id: str) -> list[str]:
+        """Return baostock codes currently stored for *index_id*."""
+        rows = self.conn.execute(
+            "SELECT code FROM ashare_index_constituents WHERE index_id = ? ORDER BY code",
+            (index_id,),
+        ).fetchall()
+        return [r["code"] for r in rows]
+
     def daily_last_date(self, code: str) -> Optional[str]:
         """Return the newest ``trade_date`` persisted for *code*, or *None*."""
         row = self.conn.execute(
             "SELECT MAX(trade_date) FROM daily_kline WHERE code = ?", (code,)
         ).fetchone()
         return row[0] if row and row[0] else None
+
+    def daily_last_dates(self) -> dict[str, str]:
+        """Return ``{code: newest trade_date}`` for every stored symbol."""
+        rows = self.conn.execute(
+            "SELECT code, MAX(trade_date) AS last FROM daily_kline GROUP BY code"
+        ).fetchall()
+        return {r["code"]: r["last"] for r in rows if r["last"]}
+
+    def daily_extras_gaps(self) -> dict[str, str]:
+        """Return ``{code: earliest trade_date}`` still missing extra fields.
+
+        Pre-migration rows have ``tradestatus IS NULL``. Halted days after a
+        proper refill have ``tradestatus = 0`` and a null ``turn``, so they
+        are not treated as gaps.
+        """
+        rows = self.conn.execute(
+            """SELECT code, MIN(trade_date) AS first
+               FROM daily_kline
+               WHERE tradestatus IS NULL
+               GROUP BY code"""
+        ).fetchall()
+        return {r["code"]: r["first"] for r in rows if r["first"]}
 
     def daily_closes(
         self,
@@ -286,6 +397,66 @@ class Repository:
             out.setdefault(r["code"], []).append(float(r["close"]))
         return out
 
+    def daily_bars(
+        self,
+        start: str | None = None,
+        end: str | None = None,
+        codes: list[str] | None = None,
+    ) -> dict[str, dict[str, list]]:
+        """Return ``{code: {column: [values...]}}`` ordered by ``trade_date``.
+
+        Columns: trade_date, open, high, low, close, volume, turn,
+        tradestatus, is_st.  Halt days keep a row (volume 0, turn None).
+        Used by the fused similarity scan so price / turnover / chips share
+        the same calendar slice.
+        """
+        query = (
+            "SELECT code, trade_date, open, high, low, close, volume, "
+            "turn, tradestatus, is_st FROM daily_kline"
+        )
+        conds: list[str] = []
+        params: list = []
+        if start:
+            conds.append("trade_date >= ?")
+            params.append(start)
+        if end:
+            conds.append("trade_date <= ?")
+            params.append(end)
+        if codes:
+            conds.append(f"code IN ({','.join('?' * len(codes))})")
+            params.extend(codes)
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        query += " ORDER BY trade_date"
+
+        empty = {
+            "trade_date": [],
+            "open": [],
+            "high": [],
+            "low": [],
+            "close": [],
+            "volume": [],
+            "turn": [],
+            "tradestatus": [],
+            "is_st": [],
+        }
+        out: dict[str, dict[str, list]] = {}
+        for r in self.conn.execute(query, params):
+            rec = out.get(r["code"])
+            if rec is None:
+                rec = {k: [] for k in empty}
+                out[r["code"]] = rec
+            rec["trade_date"].append(r["trade_date"])
+            rec["open"].append(r["open"])
+            rec["high"].append(r["high"])
+            rec["low"].append(r["low"])
+            rec["close"].append(r["close"])
+            rec["volume"].append(r["volume"])
+            rec["turn"].append(r["turn"])
+            rec["tradestatus"].append(r["tradestatus"])
+            rec["is_st"].append(r["is_st"])
+        return out
+
     def daily_ohlc(
         self,
         code: str,
@@ -299,7 +470,7 @@ class Repository:
         baostock (exchange sessions), not filled natural days.
         """
         query = (
-            "SELECT trade_date, open, high, low, close, volume "
+            "SELECT trade_date, open, high, low, close, volume, turn "
             "FROM daily_kline WHERE code = ?"
         )
         params: list = [code]
@@ -320,6 +491,7 @@ class Repository:
                     "low": r["low"],
                     "close": r["close"],
                     "volume": r["volume"],
+                    "turn": r["turn"],
                 }
             )
         return rows

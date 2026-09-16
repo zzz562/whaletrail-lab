@@ -21,7 +21,8 @@ from whaletrail.data.baostock_source import to_baostock_code
 from whaletrail.data.history import build_daily_history
 from whaletrail.data.watchlist import load_watchlist
 from whaletrail.metrics.performance import calculate_metrics, compute_trade_pnl
-from whaletrail.similarity import normalize, rank_similar
+from whaletrail.chips import chip_histogram
+from whaletrail.similarity import DEFAULT_WEIGHTS, normalize, rank_multi
 from whaletrail.storage.repository import Repository
 
 st.set_page_config(page_title="WhaleTrail", layout="wide")
@@ -742,16 +743,16 @@ def page_ashare_paper() -> None:
 def _similarity_universe(
     start: str | None = None,
     end: str | None = None,
-) -> tuple[dict[str, list[float]], dict[str, str], str]:
-    """Close series for DTW scan. Prefer baostock daily_kline; never invent OHLC."""
+) -> tuple[dict[str, dict[str, list]], dict[str, str], str]:
+    """Aligned daily bars for fused scan. Prefer baostock; never invent OHLC."""
     try:
         repo = Repository(DB_PATH)
         if start is None and end is None:
             start = (date.today() - pd.Timedelta(days=420)).strftime("%Y-%m-%d")
-        closes = repo.daily_closes(start=start, end=end)
+        bars = repo.daily_bars(start=start, end=end)
         names = repo.universe_names()
         repo.close()
-        if closes:
+        if bars:
             try:
                 for item in load_watchlist(WATCHLIST_PATH):
                     if item.market == "china":
@@ -759,24 +760,30 @@ def _similarity_universe(
             except Exception:
                 pass
             rng = f"{start or '?'}→{end or '最新'}"
-            return closes, names, f"全市场 {len(closes)} 只 · baostock daily_kline · {rng}"
+            return bars, names, f"全市场 {len(bars)} 只 · baostock daily_kline · {rng}"
     except Exception:
         pass
-    # Fallback: watchlist snapshots — no reliable calendar window; only for trailing mode.
     if start is not None or end is not None:
         return {}, {}, "无 baostock daily_kline · 固定窗不可用（不拿 tvscreener 冒充日 K）"
     try:
         items = [i for i in load_watchlist(WATCHLIST_PATH) if i.market == "china"]
     except Exception:
         items = []
-    closes, names = {}, {}
+    bars, names = {}, {}
     for item in items:
         hist = build_daily_history(DB_PATH, item.tv_symbol)
         if hist.empty:
             continue
-        closes[item.tv_symbol] = [float(x) for x in hist["close"].tolist()]
+        bars[item.tv_symbol] = {
+            "trade_date": [d.strftime("%Y-%m-%d") for d in hist.index],
+            "open": [float(x) for x in hist["open"].tolist()],
+            "high": [float(x) for x in hist["high"].tolist()],
+            "low": [float(x) for x in hist["low"].tolist()],
+            "close": [float(x) for x in hist["close"].tolist()],
+            "volume": [float(x) for x in hist["volume"].tolist()],
+        }
         names[item.tv_symbol] = item.name
-    return closes, names, f"A股 watchlist {len(closes)} 只 · tvscreener 快照积累（仅 trailing）"
+    return bars, names, f"A股 watchlist {len(bars)} 只 · tvscreener 快照积累（仅 trailing，无换手/筹码）"
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _template_ohlc(code: str, start: str | None, end: str | None) -> pd.DataFrame:
@@ -791,13 +798,13 @@ def _template_ohlc(code: str, start: str | None, end: str | None) -> pd.DataFram
         return pd.DataFrame()
     df = pd.DataFrame(rows)
     df["trade_date"] = pd.to_datetime(df["trade_date"])
-    for col in ("open", "high", "low", "close"):
+    for col in ("open", "high", "low", "close", "volume", "turn"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df.dropna(subset=["open", "high", "low", "close"])
 
 def _render_template_kline(df: pd.DataFrame, mark_start: date, mark_end: date, title: str) -> None:
-    """Daily K for template; shaded band = 圈定模板窗口（观察用，不是买卖/三字）。"""
+    """Daily K + volume for template; shaded band = 圈定模板窗口（观察用，不是买卖/三字）。"""
     if df.empty:
         st.info("模板股该区间无日 K（baostock/daily_kline 缺行）。空图，不编 OHLC。")
         return
@@ -811,20 +818,80 @@ def _render_template_kline(df: pd.DataFrame, mark_start: date, mark_end: date, t
         x="trade_date:T", y="low:Q", y2="high:Q",
         color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
     )
-    bars = alt.Chart(plot).mark_bar(size=5).encode(
+    tips = ["trade_date:T", "open:Q", "high:Q", "low:Q", "close:Q"]
+    if "volume" in plot.columns:
+        tips.append("volume:Q")
+    if "turn" in plot.columns:
+        tips.append("turn:Q")
+    candles = alt.Chart(plot).mark_bar(size=5).encode(
         x=alt.X("trade_date:T", title=None),
         y=alt.Y("open:Q", title=None),
         y2="close:Q",
         color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
-        tooltip=["trade_date:T", "open:Q", "high:Q", "low:Q", "close:Q"],
+        tooltip=tips,
     )
-    ch = (band + rules + bars).properties(height=280, width=980, title=title)
+    kline = (band + rules + candles).properties(height=260, width=980, title=title)
+    if "volume" in plot.columns and plot["volume"].notna().any():
+        vol = alt.Chart(plot).mark_bar(size=5).encode(
+            x=alt.X("trade_date:T", title=None),
+            y=alt.Y("volume:Q", title="量"),
+            color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
+            tooltip=tips,
+        ).properties(height=80, width=980)
+        ch = alt.vconcat(kline, vol).resolve_scale(x="shared")
+    else:
+        ch = kline
     st.altair_chart(_alt_dark(ch), width="stretch")
-    st.caption("黄带=圈定模板窗口（只服务形态对比，不是买卖区间，也不是观察/接近/触发）。")
+    st.caption("黄带=圈定模板窗口（只服务形态对比，不是买卖区间，也不是观察/接近/触发）。量柱是手数，拟合用换手。")
+
+
+def _render_chip_hist(
+    hist_a, name_a: str, hist_b=None, name_b: str | None = None, title: str = ""
+) -> None:
+    rows = []
+    n = len(hist_a)
+    for i, v in enumerate(hist_a):
+        rows.append({"rel": (i + 0.5) / n, "mass": float(v), "series": name_a})
+    if hist_b is not None and name_b:
+        n2 = len(hist_b)
+        for i, v in enumerate(hist_b):
+            rows.append({"rel": (i + 0.5) / n2, "mass": float(v), "series": name_b})
+    ch = alt.Chart(pd.DataFrame(rows)).mark_bar(opacity=0.55, size=8).encode(
+        x=alt.X("rel:Q", title="窗口内相对价位 (0=最低, 1=最高)"),
+        y=alt.Y("mass:Q", title="筹码质量"),
+        color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top")),
+        tooltip=["series", "rel", "mass"],
+    ).properties(height=180, width=980, title=title or None)
+    st.altair_chart(_alt_dark(ch), width="stretch")
+
+
+def _overlay_series(codes: list[str], eligible: dict, names: dict, key: str, slice_n: int, title: str, y_title: str) -> None:
+    chart_rows = []
+    for code in codes:
+        raw = eligible[code].get(key) or eligible[code].get("close")
+        if not raw:
+            continue
+        tail = raw[-slice_n:]
+        vals = [0.0 if x is None or x != x else float(x) for x in tail]
+        series = normalize(vals)
+        chart_rows.extend(
+            {"t": i, "value": float(v), "series": names.get(code) or code}
+            for i, v in enumerate(series)
+        )
+    if not chart_rows:
+        st.caption(f"{title}：无序列")
+        return
+    line = alt.Chart(pd.DataFrame(chart_rows)).mark_line(strokeWidth=2).encode(
+        x=alt.X("t:Q", title="窗口内第 N 个交易日"),
+        y=alt.Y("value:Q", title=y_title),
+        color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top")),
+        tooltip=["series", "t", "value"],
+    ).properties(height=240, width=980, title=title)
+    st.altair_chart(_alt_dark(line), width="stretch")
 
 def page_similar() -> None:
-    _page_header("相似选股", "DTW 形态观察 · 不是交易账 · 不扩可交易名单")
-    _note("观察工具。形态相近不等于可交易，不产出买卖指令。圈定区间只当模板窗口，不写三字、不进跟庄。")
+    _page_header("相似选股", "K 线 + 换手 + 筹码拟合 · 观察工具 · 不扩可交易名单")
+    _note("观察工具。形态相近不等于可交易，不产出买卖指令。筹码是窗口内本地 CYQ（不复权），不是东财成品。")
 
     mode = st.radio(
         "对比窗口模式",
@@ -832,15 +899,23 @@ def page_similar() -> None:
         horizontal=True,
     )
     top_n = st.slider("显示结果数", 5, 50, 20, step=5)
+    wc1, wc2, wc3, wc4 = st.columns(4)
+    with wc1:
+        w_k = st.slider("K 线权重", 0, 100, int(DEFAULT_WEIGHTS["kline"] * 100))
+    with wc2:
+        w_v = st.slider("换手权重", 0, 100, int(DEFAULT_WEIGHTS["volume"] * 100))
+    with wc3:
+        w_c = st.slider("筹码权重", 0, 100, int(DEFAULT_WEIGHTS["chip"] * 100))
+    with wc4:
+        exclude_st = st.checkbox("排除 ST", value=True)
+    weights = {"kline": float(w_k), "volume": float(w_v), "chip": float(w_c)}
 
     if mode.startswith("当下往前"):
         window = st.number_input("对比窗口（交易日）", min_value=10, max_value=250, value=90, step=10)
         win = int(window)
-        closes, names, source_label = _similarity_universe()
-        range_start = range_end = None
+        bars, names, source_label = _similarity_universe()
         k_start = (date.today() - pd.Timedelta(days=max(420, int(win * 2)))).isoformat()
         k_end = date.today().isoformat()
-        # 圈定：默认最近 win 个交易日的近似日历窗，可改
         c1, c2 = st.columns(2)
         with c1:
             mark_start = st.date_input("圈定起点（图上黄带）", value=date.today() - pd.Timedelta(days=int(win * 1.6)).to_pytimedelta())
@@ -855,11 +930,11 @@ def page_similar() -> None:
         if mark_end < mark_start:
             st.warning("终点早于起点。"); return
         range_start, range_end = mark_start.isoformat(), mark_end.isoformat()
-        closes, names, source_label = _similarity_universe(start=range_start, end=range_end)
-        win = None  # use full sliced series
+        bars, names, source_label = _similarity_universe(start=range_start, end=range_end)
+        win = None
         k_start, k_end = range_start, range_end
 
-    if not closes:
+    if not bars:
         st.info(f"暂无可用序列。{source_label or '缺源'}。缺则空，不编 OHLC。")
         return
 
@@ -867,24 +942,27 @@ def page_similar() -> None:
         name = names.get(code) or ""
         return f"{name} ({code})" if name else code
 
-    all_codes = sorted(closes.keys())
-    default = next((c for c in ("sh.601899", "SSE:601899") if c in closes), all_codes[0])
+    def _n(b: dict) -> int:
+        return len(b.get("close") or [])
+
+    all_codes = sorted(bars.keys())
+    default = next((c for c in ("sh.601899", "SSE:601899") if c in bars), all_codes[0])
     ref = st.selectbox("参考标的（模板）", all_codes, index=all_codes.index(default), format_func=_label)
 
-    # Template K — baostock daily_kline only
     _sec("模板股日 K")
-    # For trailing mode, show a wider K then highlight mark band; for fixed, K == scan window
     ohlc = _template_ohlc(ref, k_start, k_end)
     _render_template_kline(ohlc, mark_start, mark_end, title=_label(ref))
 
     if win is not None:
-        eligible = {c: s for c, s in closes.items() if len(s) >= win}
+        eligible = {c: b for c, b in bars.items() if _n(b) >= win}
         need = win
+        slice_n = win
     else:
-        ref_n = len(closes.get(ref, []))
+        ref_n = _n(bars.get(ref, {}))
         need = max(ref_n, 10)
-        eligible = {c: s for c, s in closes.items() if len(s) >= need}
-    skipped = len(closes) - len(eligible)
+        eligible = {c: b for c, b in bars.items() if _n(b) >= need}
+        slice_n = _n(bars.get(ref, {}))
+    skipped = len(bars) - len(eligible)
     st.caption(
         f"数据源: {source_label} · 丢掉 {skipped} 只不足窗口的短序列（新股/停牌缺交易日，不补）"
         + (f" · 窗口={need} 根" if need else "")
@@ -892,40 +970,90 @@ def page_similar() -> None:
     if ref not in eligible:
         st.info(f"参考标的窗口内不足 {need} 根，缩小窗口或换一只 / 换区间。")
         return
-    if not st.button("运行相似度扫描", width="stretch"):
-        return
-    with st.spinner(f"正在扫描 {len(eligible)} 只满窗口标的…"):
-        if win is not None:
-            ranked = rank_similar(eligible[ref], eligible, window=win)
-            slice_n = win
+
+    _sec("模板股筹码（对比窗口）")
+    ref_bars = eligible[ref]
+    if ref_bars.get("turn") and ref_bars.get("high") and ref_bars.get("low"):
+        hist_ref, _, _ = chip_histogram(
+            ref_bars["high"][-slice_n:],
+            ref_bars["low"][-slice_n:],
+            ref_bars["close"][-slice_n:],
+            ref_bars["turn"][-slice_n:],
+            (ref_bars.get("tradestatus") or [1] * slice_n)[-slice_n:],
+        )
+        if float(sum(hist_ref)) > 0:
+            _render_chip_hist(hist_ref, _label(ref), title="窗口内成本分布 · 本地 CYQ · 不复权")
+            st.caption("相对价轴；除权日附近会失真。与扫描用的是同一段窗口，不是黄带。")
         else:
-            ranked = rank_similar(eligible[ref], eligible, window=None)
-            slice_n = len(eligible[ref])
-    ranked = [r for r in ranked if r[0] != ref][: top_n]
+            st.caption("该窗口换手全空，筹码图画不了。")
+    else:
+        st.caption("无换手列，筹码通道关闭（tvscreener 兜底或未回填）。")
+
+    clicked = st.button("运行相似度扫描", width="stretch")
+    if clicked:
+        with st.spinner(f"正在扫描 {len(eligible)} 只满窗口标的…"):
+            ranked, used_w = rank_multi(
+                eligible[ref],
+                eligible,
+                window=win,
+                weights=weights,
+                exclude_st=exclude_st,
+            )
+        ranked = [m for m in ranked if m.code != ref][: top_n]
+        st.session_state["similar_scan"] = {
+            "ref": ref, "ranked": ranked, "used_w": used_w, "slice_n": slice_n,
+        }
+    state = st.session_state.get("similar_scan")
+    if not state or state.get("ref") != ref:
+        return
+    ranked, used_w, slice_n = state["ranked"], state["used_w"], state["slice_n"]
     if not ranked:
         st.caption("无有效候选（短序列已丢掉）")
         return
-    rows = [
-        {"排名": i, "代码": code, "名称": names.get(code, ""), "DTW 距离": round(dist, 4)}
-        for i, (code, dist) in enumerate(ranked, start=1)
-    ]
+    wtxt = " / ".join(f"{k} {v:.0%}" for k, v in used_w.items())
+    rows = []
+    for i, m in enumerate(ranked, start=1):
+        rows.append({
+            "排名": i,
+            "代码": m.code,
+            "名称": names.get(m.code, ""),
+            "综合分": round(m.fused, 4),
+            "K DTW": round(m.d_kline, 4),
+            "量 L1": None if m.d_vol is None or m.d_vol != m.d_vol or m.d_vol == float("inf") else round(m.d_vol, 4),
+            "筹码 EMD": None if m.d_chip is None or m.d_chip != m.d_chip or m.d_chip == float("inf") else round(m.d_chip, 4),
+            "获利比例": None if m.winner_ratio is None else round(m.winner_ratio, 3),
+            "集中度": None if m.concentration is None else round(m.concentration, 3),
+        })
     _show(_style_base(pd.DataFrame(rows).style.hide(axis="index")), width="stretch")
-    st.caption("DTW 距离只是形态观察，不是选股结论，不是买卖信号。")
-    _sec("归一化走势叠加")
-    chart_rows = []
-    for code in [ref] + [r[0] for r in ranked[:5]]:
-        series = normalize(eligible[code][-slice_n:])
-        chart_rows.extend(
-            {"t": i, "value": float(v), "series": names.get(code) or code}
-            for i, v in enumerate(series)
-        )
-    line = alt.Chart(pd.DataFrame(chart_rows)).mark_line(strokeWidth=2).encode(
-        x=alt.X("t:Q", title="窗口内第 N 个交易日"),
-        y=alt.Y("value:Q", title="归一化收盘 (0–1)"),
-        color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top")),
-        tooltip=["series", "t", "value"],
-    ).properties(height=300, width=980)
-    st.altair_chart(_alt_dark(line), width="stretch")
+    st.caption(
+        f"实际权重 {wtxt}。综合分是通道分位的加权（0=最像）。"
+        "观察用，不是选股结论，不是买卖信号。"
+        + (" · 已排除 ST。" if exclude_st else "")
+    )
+
+    overlay_codes = [ref] + [m.code for m in ranked[:5]]
+    _sec("归一化收盘叠加")
+    _overlay_series(overlay_codes, eligible, names, "close", slice_n, "", "归一化收盘 (0–1)")
+    _sec("归一化换手叠加")
+    vol_key = "turn" if eligible[ref].get("turn") else "volume"
+    _overlay_series(overlay_codes, eligible, names, vol_key, slice_n, "", "归一化换手/量 (0–1)")
+    _sec("筹码对比")
+    cmp_codes = [m.code for m in ranked if eligible.get(m.code, {}).get("turn")]
+    if not cmp_codes or not eligible[ref].get("turn"):
+        st.caption("无换手，跳过筹码对比图。")
+        return
+    pick = st.selectbox("对比标的", cmp_codes, format_func=_label)
+    h_ref, _, _ = chip_histogram(
+        eligible[ref]["high"][-slice_n:], eligible[ref]["low"][-slice_n:],
+        eligible[ref]["close"][-slice_n:], eligible[ref]["turn"][-slice_n:],
+        (eligible[ref].get("tradestatus") or [1] * slice_n)[-slice_n:],
+    )
+    h_pick, _, _ = chip_histogram(
+        eligible[pick]["high"][-slice_n:], eligible[pick]["low"][-slice_n:],
+        eligible[pick]["close"][-slice_n:], eligible[pick]["turn"][-slice_n:],
+        (eligible[pick].get("tradestatus") or [1] * slice_n)[-slice_n:],
+    )
+    _render_chip_hist(h_ref, _label(ref), h_pick, _label(pick))
 
 def _kol_handle(acc: Any) -> str:
     return str(acc or "").lstrip("@").strip()
