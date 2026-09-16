@@ -807,24 +807,6 @@ def _similarity_universe(
         names[item.tv_symbol] = item.name
     return bars, names, f"A股 watchlist {len(bars)} 只 · tvscreener 快照积累（仅 trailing，无换手/筹码）"
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _template_ohlc(code: str, start: str | None, end: str | None) -> pd.DataFrame:
-    """Wider template K from daily_kline (context + yellow band). Empty if missing."""
-    try:
-        repo = Repository(DB_PATH)
-        rows = repo.daily_ohlc(code, start=start, end=end)
-        repo.close()
-    except Exception:
-        return pd.DataFrame()
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df["trade_date"] = pd.to_datetime(df["trade_date"])
-    for col in ("open", "high", "low", "close", "volume", "turn"):
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df.dropna(subset=["open", "high", "low", "close"])
-
 _PAIR_SCALE = alt.Scale(range=["#e6b450", "#38bdf8"])
 _CHART_W = 980
 
@@ -1012,22 +994,23 @@ def _chip_of(bars: dict, slice_n: int):
 
 def page_similar() -> None:
     _page_header("相似选股", "K 线召回 · 换手+筹码重排 · 观察工具 · 不扩可交易名单")
-    _note("先按收盘波形从全市场召回，再只在召回池里按换手和筹码重排。形态近不等于可交易。筹码是窗口内本地 CYQ（不复权），不是东财。")
+    _note("对比窗口对模板和全市场是同一段近端走势，不是两套日期。默认近 90 个交易日。形态近不等于可交易。")
 
-    mode = st.radio(
-        "对比窗口",
-        ("当下往前（交易日根数）", "固定起止日（A股交易日·沪深同步）"),
-        horizontal=True,
-    )
     preset = st.radio(
         "精排偏好",
         tuple(RANK_PRESETS.keys()),
         index=list(RANK_PRESETS.keys()).index("偏筹码"),
         horizontal=True,
         key="similar_preset",
-        help="偏筹码用远东股份×斯迪克（2026-02-25–08-26）标定：换手弱、筹码像的票往前排。",
+        help="偏筹码用远东股份×斯迪克标定：换手弱、筹码像的票往前排。",
     )
-    r1c1, r1c2, r1c3, r1c4, r1c5 = st.columns([1.1, 1, 1, 1.4, 0.8])
+    d1, d2, r1c2, r1c3, r1c4, r1c5 = st.columns([1.15, 1.15, 0.9, 0.8, 1.3, 0.7])
+    default_end = date.today()
+    default_start = default_end - pd.Timedelta(days=126).to_pytimedelta()
+    with d1:
+        mark_start = st.date_input("窗口起点", value=default_start, key="similar_scan_start")
+    with d2:
+        mark_end = st.date_input("窗口终点", value=default_end, key="similar_scan_end")
     with r1c2:
         recall_n = st.number_input("召回池", min_value=20, max_value=200, value=DEFAULT_RECALL_N, step=10, key="similar_recall_n")
     with r1c3:
@@ -1043,40 +1026,12 @@ def page_similar() -> None:
     with r1c5:
         exclude_st = st.checkbox("排除 ST", value=True)
     rank_weights = {"volume": float(vol_share), "chip": float(100 - vol_share)}
+    if mark_end < mark_start:
+        st.warning("窗口终点早于起点。")
+        return
+    st.caption("这段日期同时切模板和全市场。改日期后要点金色按钮才重新扫。")
 
-    if mode.startswith("当下往前"):
-        with r1c1:
-            window = st.number_input("窗口（交易日）", min_value=10, max_value=250, value=90, step=10)
-        win = int(window)
-        bars, names, source_label = _similarity_universe()
-        k_start = (date.today() - pd.Timedelta(days=max(420, int(win * 2)))).isoformat()
-        k_end = date.today().isoformat()
-        d1, d2 = st.columns(2)
-        with d1:
-            mark_start = st.date_input(
-                "圈定起点（图上黄带）",
-                value=date.today() - pd.Timedelta(days=int(win * 1.6)).to_pytimedelta(),
-                key="similar_mark_start",
-            )
-        with d2:
-            mark_end = st.date_input("圈定终点（图上黄带）", value=date.today(), key="similar_mark_end")
-        if mark_end < mark_start:
-            st.warning("圈定终点早于起点。"); return
-        st.caption("黄带 = 扫描窗口。改这两天再点金色按钮，才会按新区间召回。")
-    else:
-        with r1c1:
-            st.caption("区间在下一行")
-        d1, d2 = st.columns(2)
-        with d1:
-            mark_start = st.date_input("固定起点", value=date(2026, 8, 1), key="similar_fixed_start")
-        with d2:
-            mark_end = st.date_input("固定终点", value=date(2026, 9, 1), key="similar_fixed_end")
-        if mark_end < mark_start:
-            st.warning("终点早于起点。"); return
-        k_start, k_end = mark_start.isoformat(), mark_end.isoformat()
-        bars, names, source_label = _similarity_universe(start=k_start, end=k_end)
-        win = None
-
+    bars, names, source_label = _similarity_universe()
     if not bars:
         st.info(f"暂无可用序列。{source_label or '缺源'}。缺则空，不编 OHLC。")
         return
@@ -1089,7 +1044,7 @@ def page_similar() -> None:
         return len(b.get("close") or [])
 
     all_codes = sorted(bars.keys())
-    q = st.text_input("找模板（代码或名称）", placeholder="601899 或 紫金")
+    q = st.text_input("选模板股票（代码或名称）", placeholder="远东 或 600869")
     qn = (q or "").strip().lower()
     filtered = all_codes
     if qn:
@@ -1114,18 +1069,17 @@ def page_similar() -> None:
         st.info(f"参考标的在 {mark_start}～{mark_end} 不足 {need} 根，换区间或换一只。")
         return
 
-    ohlc_ctx = _template_ohlc(ref, k_start, k_end)
     preview = st.radio("模板预览", ("日 K", "筹码", "K + 筹码"), horizontal=True, key="similar_tpl_view")
     if preview in ("日 K", "K + 筹码"):
         _sec("模板 · 日 K")
-        _render_kline_panel(ohlc_ctx, _label(ref), mark_start=mark_start, mark_end=mark_end)
-        st.caption(f"黄带 = 扫描窗口 {mark_start} → {mark_end}（{slice_n} 根）。量柱是手数。")
+        _render_kline_panel(_ohlc_from_bars(eligible[ref], slice_n), _label(ref))
+        st.caption(f"扫描窗口 {mark_start} → {mark_end}（{slice_n} 根），模板和全市场同一段。")
     if preview in ("筹码", "K + 筹码"):
         _sec("模板 · 筹码")
         hist_ref = _chip_of(eligible[ref], slice_n)
         if hist_ref is not None:
             _render_chip_hist(hist_ref, _label(ref), title="窗口内本地 CYQ · 不复权")
-            st.caption("筹码按黄带/固定窗口算，相对价轴。除权日附近会失真。")
+            st.caption("和上面同一段窗口。除权日附近会失真。")
         else:
             st.caption("无换手，筹码通道关闭。重排只走换手（若有）。")
 
@@ -1175,23 +1129,36 @@ def page_similar() -> None:
             "top20": [m.code for m in ranked[:20]],
             "sz.300806": sidike,
         }
+        keep = {ref} | {m.code for m in ranked}
         _similar_logger().info(json.dumps(payload, ensure_ascii=False))
         st.session_state["similar_scan"] = {
             "sig": sig, "ranked": ranked, "used_w": used_w, "slice_n": slice_n,
             "elapsed": elapsed, "payload": payload,
+            "ref": ref,
+            "bars": {c: eligible[c] for c in keep if c in eligible},
         }
     state = st.session_state.get("similar_scan")
-    if not state or state.get("sig") != sig:
+    if not state:
         return
-    ranked, used_w, slice_n = state["ranked"], state["used_w"], state["slice_n"]
+    ranked, used_w = state["ranked"], state["used_w"]
+    slice_n = state["slice_n"]
+    view_bars = state.get("bars") or eligible
+    view_ref = state.get("ref") or ref
     pl = state.get("payload") or {}
+    stale = state.get("sig") != sig
     if pl:
-        st.info(
-            f"本次扫描窗口 **{pl.get('start')} → {pl.get('end')}**（{pl.get('bars')} 根）· "
+        msg = (
+            f"扫描窗口 {pl.get('start')} → {pl.get('end')}（{pl.get('bars')} 根）· "
             f"模板 {pl.get('ref_name') or pl.get('ref')} · 召回 {len(ranked)} · 显示 {int(top_n)} · "
-            f"量{pl.get('vol')}/筹{pl.get('chip')} · {pl.get('elapsed_s')}s。"
-            "改日期或模板后必须再点金色按钮。"
+            f"量{pl.get('vol')}/筹{pl.get('chip')} · {pl.get('elapsed_s')}s"
         )
+        if stale:
+            st.warning(msg + "。当前选项已改，这是上次结果；要按新条件请再点金色按钮。")
+        else:
+            st.info(msg + "。")
+    hit_log = (pl or {}).get("sz.300806")
+    if hit_log:
+        st.caption(f"日志：斯迪克在本次召回池，精排第 {hit_log.get('rank')}，K 线召回第 {hit_log.get('recall')}。")
     if not ranked:
         st.caption("无有效候选（短序列已丢掉）")
         return
@@ -1241,7 +1208,7 @@ def page_similar() -> None:
         "观察用，不是选股结论。"
         + (" 已排除 ST。" if exclude_st else "")
     )
-    find_q = st.text_input("在召回池里找代码 / 名称", placeholder="例如 300806 或 斯迪克", key="similar_find")
+    find_q = st.text_input("在本次结果中找（不会换模板）", placeholder="300806 或 斯迪克", key="similar_find")
     fq = (find_q or "").strip().lower()
     if fq:
         fq_code = fq.split(".", 1)[-1] if fq[:3] in ("sz.", "sh.", "bj.") else fq
@@ -1267,7 +1234,7 @@ def page_similar() -> None:
 
     m_pick = next((m for m in ranked if m.code == pick), shown[0])
     pick = m_pick.code
-    _sec(f"1v1 对照 · {_label(ref)}  vs  {_label(pick)}")
+    _sec(f"1v1 对照 · {_label(view_ref)}  vs  {_label(pick)}")
     _card_row(
         [
             {"label": "K DTW", "value": f"{m_pick.d_kline:.2f}", "sub": "越小越像波形"},
@@ -1296,24 +1263,24 @@ def page_similar() -> None:
         cols=5,
     )
     st.caption("两根日 K 各用自己的价格轴，不把 10 元和 1000 元叠到双 Y 上。波形对比走下面的归一化叠线；换手 % 已经同单位，直接叠。")
-    _render_kline_panel(_ohlc_from_bars(eligible[ref], slice_n), f"模板 · {_label(ref)}")
-    _render_kline_panel(_ohlc_from_bars(eligible[pick], slice_n), f"对照 · {_label(pick)}")
+    _render_kline_panel(_ohlc_from_bars(view_bars.get(view_ref, {}), slice_n), f"模板 · {_label(view_ref)}")
+    _render_kline_panel(_ohlc_from_bars(view_bars.get(pick, {}), slice_n), f"对照 · {_label(pick)}")
     _overlay_pair(
-        eligible, ref, pick, names, "close", slice_n,
+        view_bars, view_ref, pick, names, "close", slice_n,
         "归一化收盘（形状）", "0–1", True,
     )
-    if eligible[ref].get("turn") and eligible[pick].get("turn"):
+    if (view_bars.get(view_ref) or {}).get("turn") and (view_bars.get(pick) or {}).get("turn"):
         _overlay_pair(
-            eligible, ref, pick, names, "turn", slice_n,
+            view_bars, view_ref, pick, names, "turn", slice_n,
             "换手 %（同单位，不归一化）", "换手 %", False,
         )
     else:
         _overlay_pair(
-            eligible, ref, pick, names, "volume", slice_n,
+            view_bars, view_ref, pick, names, "volume", slice_n,
             "归一化成交量（无换手时的降级）", "0–1", True,
         )
-    h_ref = _chip_of(eligible[ref], slice_n)
-    h_pick = _chip_of(eligible.get(pick, {}), slice_n)
+    h_ref = _chip_of(view_bars.get(view_ref, {}), slice_n)
+    h_pick = _chip_of(view_bars.get(pick, {}), slice_n)
     if h_ref is not None and h_pick is not None:
         _render_chip_hist(h_ref, _label(ref), h_pick, _label(pick), title="筹码 1v1 · 相对价轴")
     else:
