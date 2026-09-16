@@ -89,6 +89,18 @@ section[data-testid="stSidebar"], [data-testid="stSidebar"], [data-testid="stSid
 [data-testid="column"] { min-width:0; overflow:hidden; }
 [data-testid="stElementToolbar"], [data-testid="stElementToolbarButton"] { display:none !important; }
 .stButton > button { background:var(--wt-surface); border:1px solid var(--wt-border); color:var(--wt-text); border-radius:8px; font-weight:600; }
+button[kind="primary"],
+[data-testid="stBaseButton-primary"],
+[data-testid="baseButton-primary"],
+.stButton > button[data-testid="baseButton-primary"] {
+  background:#e6b450 !important; color:#0a0e17 !important; border:0 !important;
+  font-weight:800 !important; font-size:1.05rem !important; min-height:52px !important;
+  letter-spacing:.02em; border-radius:10px !important;
+}
+.similar-cta { border:1px solid rgba(230,180,80,.55); border-radius:10px; padding:12px 14px 2px; margin:14px 0 18px;
+  background:linear-gradient(180deg, rgba(230,180,80,.12), rgba(17,24,38,.4)); }
+.similar-cta-kicker { font-size:11px; letter-spacing:.18em; font-weight:800; color:var(--wt-gold); margin:0 0 8px; }
+.similar-cta-sub { color:var(--wt-muted); font-size:.8rem; margin:0 0 10px; }
 </style>""", unsafe_allow_html=True)
 
 _fragment = getattr(st, "fragment", None)
@@ -975,7 +987,7 @@ def page_similar() -> None:
     with r1c2:
         recall_n = st.number_input("召回池", min_value=20, max_value=200, value=DEFAULT_RECALL_N, step=10)
     with r1c3:
-        top_n = st.number_input("显示", min_value=5, max_value=80, value=20, step=5)
+        top_n = st.number_input("显示", min_value=5, max_value=80, value=40, step=5)
     with r1c4:
         vol_share = st.slider("重排 量 ←→ 筹", 0, 100, int(DEFAULT_RANK_WEIGHTS["volume"] * 100))
     with r1c5:
@@ -1000,6 +1012,7 @@ def page_similar() -> None:
             mark_end = st.date_input("圈定终点（图上黄带）", value=date.today(), key="similar_mark_end")
         if mark_end < mark_start:
             st.warning("圈定终点早于起点。"); return
+        st.caption("黄带只画在模板 K 上。要用这两天做扫描，请改选「固定起止日」。")
     else:
         with r1c1:
             st.caption("区间在下一行")
@@ -1077,7 +1090,12 @@ def page_similar() -> None:
     )
 
     sig = (ref, win, k_start, k_end, int(recall_n), int(vol_share), bool(exclude_st))
-    clicked = st.button("K 线召回，再用量筹重排", width="stretch")
+    st.markdown(
+        '<div class="similar-cta"><div class="similar-cta-kicker">SCAN · 相似选股</div>'
+        '<p class="similar-cta-sub">先按收盘波形从全市场召回，再在池内按换手 + 筹码精排。点下面按钮开始。</p></div>',
+        unsafe_allow_html=True,
+    )
+    clicked = st.button("相似选股（K线召回 + 量筹精排）", type="primary", width="stretch", key="similar_scan_btn")
     if clicked:
         with st.spinner(f"召回 {len(eligible)} 只满窗口标的…"):
             ranked, used_w = retrieve_rank(
@@ -1144,6 +1162,29 @@ def page_similar() -> None:
         "观察用，不是选股结论。"
         + (" 已排除 ST。" if exclude_st else "")
     )
+    find_q = st.text_input("在召回池里找代码 / 名称", placeholder="例如 300806 或 斯迪克", key="similar_find")
+    fq = (find_q or "").strip().lower()
+    if fq:
+        fq_code = fq.split(".", 1)[-1] if fq[:3] in ("sz.", "sh.", "bj.") else fq
+        hit_i, hit_m = None, None
+        for i, m in enumerate(ranked, start=1):
+            name = (names.get(m.code) or "").lower()
+            tail = m.code.split(".")[-1]
+            if fq in m.code.lower() or fq_code == tail or fq in name or fq_code in name:
+                hit_i, hit_m = i, m
+                break
+        if hit_m is None:
+            st.warning(
+                f"「{find_q}」不在本次召回 {len(ranked)} 只里。"
+                f"肉眼像不代表收盘 DTW 进前 {int(recall_n)}。加大召回池后再扫，或核对是否用了「固定起止日」。"
+            )
+        else:
+            pick = hit_m.code
+            extra = "已在表内。" if hit_i <= int(top_n) else f"精排第 {hit_i}，当前表只显示前 {int(top_n)}，对照已切到这只。"
+            st.info(
+                f"{_label(hit_m.code)} · K 线召回第 {hit_m.recall_rank} · 量筹精排第 {hit_i} · "
+                f"K DTW {hit_m.d_kline:.2f}。{extra}"
+            )
 
     m_pick = next((m for m in shown if m.code == pick), shown[0])
     pick = m_pick.code
