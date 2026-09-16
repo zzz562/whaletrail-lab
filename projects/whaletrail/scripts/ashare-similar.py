@@ -49,7 +49,7 @@ def main() -> None:
         "--rank",
         type=_parse_rank,
         default=DEFAULT_RANK_WEIGHTS,
-        help="volume,chip rank weights inside the pool (default 0.6,0.4)",
+        help="volume,chip rank weights inside the pool (default 0.35,0.65)",
     )
     parser.add_argument("--include-st", action="store_true", help="Keep ST names in the ranking")
     parser.add_argument("--db", default=str(DB_PATH), help="SQLite path")
@@ -96,20 +96,19 @@ def main() -> None:
     print(f"重排 {wtxt}")
     print(
         f"{'序':<4}{'Δ':<6}{'召回':<6}{'代码':<12}{'名称':<10}"
-        f"{'K':>10}{'量':>10}{'筹':>10}{'获利':>8}{'集中':>8}"
+        f"{'K':>10}{'相关':>8}{'量':>10}{'筹':>10}"
     )
-    print("-" * 90)
+    print("-" * 86)
     for i, m in enumerate(matches, start=1):
         d_vol = f"{m.d_vol:.4f}" if m.d_vol is not None and np_finite(m.d_vol) else "—"
         d_chip = f"{m.d_chip:.4f}" if m.d_chip is not None and np_finite(m.d_chip) else "—"
-        wr = f"{m.winner_ratio:.2f}" if m.winner_ratio is not None else "—"
-        conc = f"{m.concentration:.2f}" if m.concentration is not None else "—"
+        corr = f"{m.close_corr:.2f}" if m.close_corr is not None else "—"
         delta = m.delta
         dtxt = "—" if delta is None else (f"+{delta}" if delta > 0 else str(delta))
         rtxt = "—" if m.recall_rank is None else str(m.recall_rank)
         print(
             f"{i:<4}{dtxt:<6}{rtxt:<6}{m.code:<12}{(names.get(m.code) or '')[:10]:<10}"
-            f"{m.d_kline:10.4f}{d_vol:>10}{d_chip:>10}{wr:>8}{conc:>8}"
+            f"{m.d_kline:10.4f}{corr:>8}{d_vol:>10}{d_chip:>10}"
         )
     if not matches:
         print("（无候选）")

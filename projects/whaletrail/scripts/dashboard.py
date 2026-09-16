@@ -22,7 +22,13 @@ from whaletrail.data.history import build_daily_history
 from whaletrail.data.watchlist import load_watchlist
 from whaletrail.metrics.performance import calculate_metrics, compute_trade_pnl
 from whaletrail.chips import chip_histogram
-from whaletrail.similarity import DEFAULT_RANK_WEIGHTS, DEFAULT_RECALL_N, normalize, retrieve_rank
+from whaletrail.similarity import (
+    DEFAULT_RANK_WEIGHTS,
+    DEFAULT_RECALL_N,
+    RANK_PRESETS,
+    normalize,
+    retrieve_rank,
+)
 from whaletrail.storage.repository import Repository
 
 st.set_page_config(page_title="WhaleTrail", layout="wide")
@@ -983,13 +989,27 @@ def page_similar() -> None:
         ("当下往前（交易日根数）", "固定起止日（A股交易日·沪深同步）"),
         horizontal=True,
     )
+    preset = st.radio(
+        "精排偏好",
+        tuple(RANK_PRESETS.keys()),
+        index=list(RANK_PRESETS.keys()).index("偏筹码"),
+        horizontal=True,
+        key="similar_preset",
+        help="偏筹码用远东股份×斯迪克（2026-02-25–08-26）标定：换手弱、筹码像的票往前排。",
+    )
     r1c1, r1c2, r1c3, r1c4, r1c5 = st.columns([1.1, 1, 1, 1.4, 0.8])
     with r1c2:
         recall_n = st.number_input("召回池", min_value=20, max_value=200, value=DEFAULT_RECALL_N, step=10)
     with r1c3:
         top_n = st.number_input("显示", min_value=5, max_value=80, value=40, step=5)
     with r1c4:
-        vol_share = st.slider("重排 量 ←→ 筹", 0, 100, int(DEFAULT_RANK_WEIGHTS["volume"] * 100))
+        vol_share = st.slider(
+            "重排 量 ←→ 筹",
+            0,
+            100,
+            int(RANK_PRESETS[preset]),
+            key=f"similar_vol_{preset}",
+        )
     with r1c5:
         exclude_st = st.checkbox("排除 ST", value=True)
     rank_weights = {"volume": float(vol_share), "chip": float(100 - vol_share)}
@@ -1130,6 +1150,7 @@ def page_similar() -> None:
             "代码": m.code,
             "名称": names.get(m.code, ""),
             "K DTW": round(m.d_kline, 4),
+            "相关": None if m.close_corr is None else round(m.close_corr, 3),
             "量 L1": _fmt_dist(m.d_vol),
             "筹码 EMD": _fmt_dist(m.d_chip),
             "获利": None if m.winner_ratio is None else round(m.winner_ratio, 3),
@@ -1186,12 +1207,17 @@ def page_similar() -> None:
                 f"K DTW {hit_m.d_kline:.2f}。{extra}"
             )
 
-    m_pick = next((m for m in shown if m.code == pick), shown[0])
+    m_pick = next((m for m in ranked if m.code == pick), shown[0])
     pick = m_pick.code
     _sec(f"1v1 对照 · {_label(ref)}  vs  {_label(pick)}")
     _card_row(
         [
             {"label": "K DTW", "value": f"{m_pick.d_kline:.2f}", "sub": "越小越像波形"},
+            {
+                "label": "收盘相关",
+                "value": "—" if m_pick.close_corr is None else f"{m_pick.close_corr:.2f}",
+                "sub": "1=同向同形",
+            },
             {
                 "label": "量 L1",
                 "value": "—" if _fmt_dist(m_pick.d_vol) is None else f"{m_pick.d_vol:.3f}",
@@ -1209,7 +1235,7 @@ def page_similar() -> None:
                 "accent": "#4ade80" if (m_pick.delta or 0) > 0 else ("#f87171" if (m_pick.delta or 0) < 0 else "#e6b450"),
             },
         ],
-        cols=4,
+        cols=5,
     )
     st.caption("两根日 K 各用自己的价格轴，不把 10 元和 1000 元叠到双 Y 上。波形对比走下面的归一化叠线；换手 % 已经同单位，直接叠。")
     _render_kline_panel(_ohlc_from_bars(eligible[ref], slice_n), f"模板 · {_label(ref)}")

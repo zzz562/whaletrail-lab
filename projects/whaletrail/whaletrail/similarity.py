@@ -15,7 +15,7 @@ never mix.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -23,7 +23,10 @@ from whaletrail.chips import chip_histogram, chip_stats, wasserstein_1d
 
 DEFAULT_WEIGHTS: dict[str, float] = {"kline": 0.50, "volume": 0.30, "chip": 0.20}
 DEFAULT_RECALL_N = 80
-DEFAULT_RANK_WEIGHTS: dict[str, float] = {"volume": 0.60, "chip": 0.40}
+# Calibrated on 远东股份×斯迪克 (2026-02-25–08-26): chip matched the visual
+# call, turnover L1 did not.  Volume-heavy 0.60/0.40 left that pair at #35.
+DEFAULT_RANK_WEIGHTS: dict[str, float] = {"volume": 0.35, "chip": 0.65}
+RANK_PRESETS: dict[str, int] = {"偏筹码": 35, "均衡": 50, "偏换手": 70}
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class Match:
     concentration: float | None = None
     recall_rank: int | None = None
     delta: int | None = None
+    close_corr: float | None = None
 
 
 def normalize(series: Sequence[float]) -> np.ndarray:
@@ -239,6 +243,17 @@ def _percentiles(values: Sequence[float]) -> np.ndarray:
     ranks[order] = np.arange(sub.size, dtype=float)
     out[finite] = ranks / max(sub.size - 1, 1)
     return out
+
+
+def pair_corr(a: Sequence[float], b: Sequence[float], window: int | None = None) -> float | None:
+    """Pearson correlation of min-max close, same alignment as DTW."""
+    pair = _prep_pair(a, b, window)
+    if pair is None:
+        return None
+    t, c = normalize(pair[0]), normalize(pair[1])
+    if float(t.std()) == 0.0 or float(c.std()) == 0.0:
+        return None
+    return float(np.corrcoef(t, c)[0, 1])
 
 
 def _chip_pack(
@@ -435,6 +450,7 @@ def retrieve_rank(
             "d_chip": None,
             "winner_ratio": None,
             "concentration": None,
+            "close_corr": pair_corr(t_close, close, window=None),
         }
         if want_vol and t_vol is not None:
             v = _volume_series(bars, window)
@@ -497,24 +513,15 @@ def retrieve_rank(
                 concentration=rec["concentration"],
                 recall_rank=rrank,
                 delta=None,
+                close_corr=rec["close_corr"],
             )
         )
     matches.sort(key=lambda m: (m.fused, m.d_kline, m.code))
     out: list[Match] = []
     for i, m in enumerate(matches, start=1):
         out.append(
-            Match(
-                code=m.code,
-                fused=m.fused,
-                d_kline=m.d_kline,
-                d_vol=m.d_vol,
-                d_chip=m.d_chip,
-                pct_kline=m.pct_kline,
-                pct_vol=m.pct_vol,
-                pct_chip=m.pct_chip,
-                winner_ratio=m.winner_ratio,
-                concentration=m.concentration,
-                recall_rank=m.recall_rank,
+            replace(
+                m,
                 delta=(m.recall_rank - i) if m.recall_rank is not None else None,
             )
         )

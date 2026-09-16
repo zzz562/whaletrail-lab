@@ -69,6 +69,7 @@ yfinance ──► ParquetCache ──► Backtester ──► results/*.json
 20. baostock 日 K 加列 + 静态快照（2026-09-16）：相似选股仍走 baostock，不接东财/akshare/Tushare。`daily_kline` 在 OHLCV/amount 之外补 `turn`（换手）、`tradestatus`、`pct_chg`、`is_st`、`pe_ttm`、`pb_mrq`，供后续量柱/筹码（本地用 OHLC+turn 算）/ST·估值过滤；同脚本落 `ashare_universe`（上市日/退市/状态）、`ashare_industry`（**仅申万一级**，无概念板块）、`ashare_index_constituents`（上证50/沪深300/中证500）。季频财务、前复权第二套日 K、概念/龙虎榜本次不拉。旧行 `tradestatus IS NULL` 视为缺字段，拉取脚本自动从缺口日重拉（`--skip-refill` 可关）。代码：`whaletrail/data/baostock_source.py`、`whaletrail/storage/schema.py`、`scripts/fetch-baostock-universe.py`。详见 `notes/2026-09-16-baostock-kline-extras.md`。
 21. 相似选股三通道拟合（2026-09-16）：K 线 DTW + 换手对齐 L1 + 窗口内本地 CYQ（Wasserstein）按全市场分位加权，默认 0.50/0.30/0.20，看板可调；缺换手则关掉筹码通道。量不用无约束 DTW（会把不同日的放量尖峰拉成一样）。仍是读线观察，不扩可交易名单，不拉东财筹码、不复权第二套日 K、不落筹码表。代码：`whaletrail/chips.py`、`whaletrail/similarity.py`（`rank_multi`）、`scripts/dashboard.py`、`scripts/ashare-similar.py`。详见 `notes/2026-09-16-similarity-volume-chip.md`。
 22. 相似选股改召回–重排（2026-09-16）：不再三通道直接加权。全市场只按 K 线 DTW 召回（默认 80），再在召回池内按换手 L1 + 筹码 EMD 分位重排（默认量 0.60 / 筹 0.40）。K 线不像的票进不了结果，避免茅台因筹码形状混进紫金邻居。看板对照改为点选一只，不再 Top5 三张通铺。代码：`retrieve_rank`。仍观察、不扩名单。
+23. 精排默认按远东×斯迪克标定（2026-09-16）：正向案例 `sh.600869` 远东股份 vs `sz.300806` 斯迪克（2026-02-25–08-26）。K 线 DTW 第 55、换手 L1 在召回池偏弱、筹码 EMD 前 16%。量 0.60/筹 0.40 精排第 35；改为筹 0.65/量 0.35 进前 20。默认精排偏筹码，看板提供偏筹码/均衡/偏换手三档。表增列收盘相关。代码：`DEFAULT_RANK_WEIGHTS`、`RANK_PRESETS`。
 
 ## 决策记录规范
 

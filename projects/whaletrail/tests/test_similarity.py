@@ -139,3 +139,5 @@ def test_retrieve_rank_kline_gate_then_volume_rerank():
     assert matches[0].recall_rank == 1
     assert matches[0].delta is not None
     assert "volume" in used
+    assert matches[0].close_corr is not None
+    assert matches[0].close_corr > 0.9
