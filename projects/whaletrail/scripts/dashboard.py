@@ -87,6 +87,7 @@ section[data-testid="stSidebar"], [data-testid="stSidebar"], [data-testid="stSid
 [data-testid="stVegaLiteChart"] > div, [data-testid="stVegaLiteChart"] svg { max-width:100% !important; }
 [data-testid="stHorizontalBlock"] { gap:1.25rem; align-items:flex-start; }
 [data-testid="column"] { min-width:0; overflow:hidden; }
+[data-testid="stElementToolbar"], [data-testid="stElementToolbarButton"] { display:none !important; }
 .stButton > button { background:var(--wt-surface); border:1px solid var(--wt-border); color:var(--wt-text); border-radius:8px; font-weight:600; }
 </style>""", unsafe_allow_html=True)
 
@@ -788,6 +789,24 @@ def _similarity_universe(
         names[item.tv_symbol] = item.name
     return bars, names, f"A股 watchlist {len(bars)} 只 · tvscreener 快照积累（仅 trailing，无换手/筹码）"
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _template_ohlc(code: str, start: str | None, end: str | None) -> pd.DataFrame:
+    """Wider template K from daily_kline (context + yellow band). Empty if missing."""
+    try:
+        repo = Repository(DB_PATH)
+        rows = repo.daily_ohlc(code, start=start, end=end)
+        repo.close()
+    except Exception:
+        return pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    for col in ("open", "high", "low", "close", "volume", "turn"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df.dropna(subset=["open", "high", "low", "close"])
+
 _PAIR_SCALE = alt.Scale(range=["#e6b450", "#38bdf8"])
 _CHART_W = 980
 
@@ -815,8 +834,14 @@ def _ohlc_from_bars(bars: dict, slice_n: int) -> pd.DataFrame:
     return df.dropna(subset=["open", "high", "low", "close"])
 
 
-def _render_kline_panel(df: pd.DataFrame, title: str, width: int = _CHART_W) -> None:
-    """Window-only daily K + volume. Own price axis — never dual-axis overlay."""
+def _render_kline_panel(
+    df: pd.DataFrame,
+    title: str,
+    width: int = _CHART_W,
+    mark_start: date | None = None,
+    mark_end: date | None = None,
+) -> None:
+    """Daily K + volume. Own price axis. Optional yellow band = 圈定区间."""
     if df.empty:
         st.info("该窗口无日 K。空图，不编 OHLC。")
         return
@@ -838,7 +863,14 @@ def _render_kline_panel(df: pd.DataFrame, title: str, width: int = _CHART_W) -> 
         color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
         tooltip=tips,
     )
-    kline = (rules + candles).properties(height=200, width=width, title=title)
+    layers = rules + candles
+    if mark_start is not None and mark_end is not None:
+        band = alt.Chart(pd.DataFrame({
+            "x": [pd.Timestamp(mark_start)],
+            "x2": [pd.Timestamp(mark_end)],
+        })).mark_rect(opacity=0.18, color="#e6b450").encode(x="x:T", x2="x2:T")
+        layers = band + layers
+    kline = layers.properties(height=220, width=width, title=title)
     if "volume" in plot.columns and plot["volume"].notna().any():
         vol = alt.Chart(plot).mark_bar(size=5).encode(
             x=alt.X("trade_date:T", title=None),
@@ -957,15 +989,25 @@ def page_similar() -> None:
         bars, names, source_label = _similarity_universe()
         k_start = (date.today() - pd.Timedelta(days=max(420, int(win * 2)))).isoformat()
         k_end = date.today().isoformat()
-        mark_start = mark_end = None
+        d1, d2 = st.columns(2)
+        with d1:
+            mark_start = st.date_input(
+                "圈定起点（图上黄带）",
+                value=date.today() - pd.Timedelta(days=int(win * 1.6)).to_pytimedelta(),
+                key="similar_mark_start",
+            )
+        with d2:
+            mark_end = st.date_input("圈定终点（图上黄带）", value=date.today(), key="similar_mark_end")
+        if mark_end < mark_start:
+            st.warning("圈定终点早于起点。"); return
     else:
         with r1c1:
             st.caption("区间在下一行")
         d1, d2 = st.columns(2)
         with d1:
-            mark_start = st.date_input("固定起点", value=date(2026, 8, 1))
+            mark_start = st.date_input("固定起点", value=date(2026, 8, 1), key="similar_fixed_start")
         with d2:
-            mark_end = st.date_input("固定终点", value=date(2026, 9, 1))
+            mark_end = st.date_input("固定终点", value=date(2026, 9, 1), key="similar_fixed_end")
         if mark_end < mark_start:
             st.warning("终点早于起点。"); return
         k_start, k_end = mark_start.isoformat(), mark_end.isoformat()
@@ -1011,17 +1053,21 @@ def page_similar() -> None:
         st.info(f"参考标的窗口内不足 {need} 根，缩小窗口或换一只 / 换区间。")
         return
 
-    ohlc_win = _ohlc_from_bars(eligible[ref], slice_n)
-    scanned = bool(st.session_state.get("similar_scan"))
-    with st.expander("模板预览", expanded=not scanned):
-        _sec("模板 · 日 K（对比窗口）")
-        _render_kline_panel(ohlc_win, _label(ref))
-        st.caption("只画对比窗口，和召回/重排同一段。量柱是手数；召回用收盘，重排用换手。")
+    ohlc_ctx = _template_ohlc(ref, k_start, k_end)
+    preview = st.radio("模板预览", ("日 K", "筹码", "K + 筹码"), horizontal=True, key="similar_tpl_view")
+    if preview in ("日 K", "K + 筹码"):
+        _sec("模板 · 日 K")
+        _render_kline_panel(ohlc_ctx, _label(ref), mark_start=mark_start, mark_end=mark_end)
+        if win is not None:
+            st.caption("黄带=圈定区间（看图用）。召回用最近 N 个交易日，不是黄带本身。量柱是手数。")
+        else:
+            st.caption("黄带=固定对比窗口，与召回同一段。量柱是手数。")
+    if preview in ("筹码", "K + 筹码"):
         _sec("模板 · 筹码")
         hist_ref = _chip_of(eligible[ref], slice_n)
         if hist_ref is not None:
             _render_chip_hist(hist_ref, _label(ref), title="窗口内本地 CYQ · 不复权")
-            st.caption("相对价轴。除权日附近会失真。")
+            st.caption("筹码按召回窗口算（最近 N 根或固定起止），相对价轴。除权日附近会失真。")
         else:
             st.caption("无换手，筹码通道关闭。重排只走换手（若有）。")
 

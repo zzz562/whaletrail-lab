@@ -30,7 +30,7 @@
 |----|--------|--------|
 | **黄金 Paper** | 黄金账：`results/backtest_*.json` 中 GLD `gold_sma` + `data_cache/GLD.parquet` 的买入持有 + `data_cache/SPY.parquet` 对照；金价对照：`GC=F` 日线，**只读自己的缓存文件**（`data_cache/GC=F.parquet` 或 `GC_F.parquet`）；5m/live：`results/paper_live_state.json`（仅观察）。 | 缺回测 / 缺缓存 / 缺 live 则该节空渲染；GC=F 缓存缺失则对照列为空/null，不拿 GLD 价格冒充。 |
 | **A股 Paper** | 仅 `results/ashare_paper_state.json`（15:30 日频 paper 账：tvscreener 快照 + 深交所官方日历）。**不放「观察 / 接近 / 触发」**，不放黄金矿股。 | 缺 state 则空渲染，不编仓位与成交。 |
-| **相似选股** | SQLite `daily_kline`。K 线 DTW 召回（默认 80）→ 池内换手 L1 + CYQ Wasserstein 重排。表可点选一只做 1v1：两根日 K 各用自己的价格轴（不双 Y 叠原始价），归一化收盘叠波形，换手 % 同轴叠，筹码相对价轴重叠。模板 K 与筹码上下排，只画对比窗口。不是交易账，不扩可交易名单。 | 无历史则提示跑 `fetch-baostock-universe.py`。无 turn 则筹码空。 |
+| **相似选股** | SQLite `daily_kline`。K 线 DTW 召回（默认 80）→ 池内换手 L1 + CYQ Wasserstein 重排。当下往前可圈定黄带日期（看图用，召回仍是最近 N 根）；固定起止日即对比窗口。模板预览用「日 K / 筹码 / K+筹码」切换，一直留在扫描按钮上方。表可点选一只做 1v1。不是交易账，不扩可交易名单。 | 无历史则提示跑 `fetch-baostock-universe.py`。无 turn 则筹码空。 |
 | **KOL 评测** | 冻结 18 个 A 股荐股账号名册 + `results/` 里已存的荐股/事后对照（如 `kol_eval*.json`）。**不是跟庄。** 不调 live X API，不用黄金情绪 JSON 冒充评测。 | 无存储评测 → 空表，不编准确率。 |
 | **跟庄复盘** | 仅现有 A 股 watchlist（含黄金矿股）。标签只允许「观察 / 接近 / 触发」，来自已存结果（若有）。日 K 来自 baostock `daily_kline` 的**已收盘**复权 bar。tvscreener 快照不是已完成日线。 | 无已收盘日 K / 无已存标签 → 空或 null，不编 OHLC、不新建 `yin-right.json`。 |
 
