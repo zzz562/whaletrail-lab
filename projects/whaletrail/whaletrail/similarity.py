@@ -22,11 +22,17 @@ import numpy as np
 from whaletrail.chips import chip_histogram, chip_stats, wasserstein_1d
 
 DEFAULT_WEIGHTS: dict[str, float] = {"kline": 0.50, "volume": 0.30, "chip": 0.20}
+DEFAULT_RECALL_N = 80
+DEFAULT_RANK_WEIGHTS: dict[str, float] = {"volume": 0.60, "chip": 0.40}
 
 
 @dataclass(frozen=True)
 class Match:
-    """One fused-ranking row.  Distances are raw; ``pct_*`` are 0=most similar."""
+    """One ranking row.  Distances are raw; ``pct_*`` are 0=most similar.
+
+    ``recall_rank`` is 1-based kline order in the eligible universe.
+    ``delta`` is ``recall_rank - final_rank`` (positive = promoted by volume/chip).
+    """
 
     code: str
     fused: float
@@ -38,6 +44,8 @@ class Match:
     pct_chip: float | None
     winner_ratio: float | None = None
     concentration: float | None = None
+    recall_rank: int | None = None
+    delta: int | None = None
 
 
 def normalize(series: Sequence[float]) -> np.ndarray:
@@ -354,3 +362,160 @@ def rank_multi(
         )
     matches.sort(key=lambda m: (m.fused, m.d_kline, m.code))
     return matches, w
+
+
+def retrieve_rank(
+    target: Mapping[str, Sequence[float]],
+    candidates: Mapping[str, Mapping[str, Sequence[float]]],
+    window: int | None = None,
+    recall_n: int = DEFAULT_RECALL_N,
+    rank_weights: Mapping[str, float] | None = None,
+    exclude_st: bool = True,
+) -> tuple[list[Match], dict[str, float]]:
+    """K-line recall, then volume/chip rerank inside the pool.
+
+    Stage 1: DTW on close over the whole eligible universe, keep the
+    *recall_n* nearest names.  Stage 2: among those only, percentile-fuse
+    turnover L1 and chip Wasserstein.  A name that is not kline-similar
+    cannot enter, even if its chips look identical.
+
+    Ranking percentiles are computed **inside the recall pool**, not the
+    whole market.  ``Match.fused`` is the stage-2 score.  ``recall_rank``
+    is the stage-1 kline place.
+    """
+    t_close = _col(target, "close", window)
+    if t_close is None or t_close.size < 2:
+        return [], dict(DEFAULT_RANK_WEIGHTS)
+
+    kline_rows: list[tuple[str, float, Mapping[str, Sequence[float]]]] = []
+    for code, bars in candidates.items():
+        if exclude_st and _last_is_st(bars, window):
+            continue
+        close = _col(bars, "close", window)
+        if close is None or close.size < 2:
+            continue
+        d_k = pair_dtw(t_close, close, window=None)
+        if not np.isfinite(d_k):
+            continue
+        kline_rows.append((code, d_k, bars))
+    kline_rows.sort(key=lambda item: (item[1], item[0]))
+    if not kline_rows:
+        return [], dict(DEFAULT_RANK_WEIGHTS)
+
+    n_keep = max(1, int(recall_n))
+    recalled = kline_rows[:n_keep]
+    recall_place = {code: i + 1 for i, (code, _, _) in enumerate(kline_rows)}
+
+    rw = normalize_weights(rank_weights or DEFAULT_RANK_WEIGHTS)
+    rw = {k: v for k, v in rw.items() if k in ("volume", "chip") and v > 0}
+    if not rw:
+        rw = dict(DEFAULT_RANK_WEIGHTS)
+
+    want_vol = "volume" in rw
+    want_chip = "chip" in rw
+    if want_chip and not _has_turn_mass(target, window):
+        want_chip = False
+        rw = normalize_weights({**rw, "chip": 0.0}) or {"volume": 1.0}
+
+    t_vol = _volume_series(target, window) if want_vol else None
+    t_chip = None
+    if want_chip:
+        t_chip, _, _ = _chip_pack(target, window)
+        if t_chip is None:
+            want_chip = False
+            rw = normalize_weights({**rw, "chip": 0.0}) or {"volume": 1.0}
+
+    recs: list[dict] = []
+    for code, d_k, bars in recalled:
+        close = _col(bars, "close", window)
+        rec: dict = {
+            "code": code,
+            "d_kline": d_k,
+            "d_vol": None,
+            "d_chip": None,
+            "winner_ratio": None,
+            "concentration": None,
+        }
+        if want_vol and t_vol is not None:
+            v = _volume_series(bars, window)
+            rec["d_vol"] = pair_l1(t_vol, v, window=None) if v is not None else float("inf")
+        if want_chip and t_chip is not None:
+            hist, pmin, pmax = _chip_pack(bars, window)
+            if hist is None:
+                rec["d_chip"] = float("inf")
+            else:
+                rec["d_chip"] = wasserstein_1d(t_chip, hist)
+                rec["winner_ratio"], rec["concentration"] = chip_stats(
+                    hist, float(close[-1]), pmin, pmax
+                )
+        recs.append(rec)
+
+    if not recs:
+        return [], rw
+
+    # Percentiles inside the recall pool.  If a rank channel is off, fall
+    # back to kline order so the pool is still sorted.
+    use_kline_fallback = not want_vol and not want_chip
+    pct_k = _percentiles([r["d_kline"] for r in recs])
+    pct_v = (
+        _percentiles([r["d_vol"] if r["d_vol"] is not None else float("inf") for r in recs])
+        if want_vol
+        else None
+    )
+    pct_c = (
+        _percentiles([r["d_chip"] if r["d_chip"] is not None else float("inf") for r in recs])
+        if want_chip
+        else None
+    )
+    wv = rw.get("volume", 0.0) if want_vol else 0.0
+    wc = rw.get("chip", 0.0) if want_chip else 0.0
+
+    matches: list[Match] = []
+    for i, rec in enumerate(recs):
+        pv = float(pct_v[i]) if pct_v is not None else None
+        pc = float(pct_c[i]) if pct_c is not None else None
+        if use_kline_fallback:
+            fused = float(pct_k[i])
+        else:
+            fused = 0.0
+            if pv is not None:
+                fused += wv * pv
+            if pc is not None:
+                fused += wc * pc
+        rrank = recall_place[rec["code"]]
+        matches.append(
+            Match(
+                code=rec["code"],
+                fused=fused,
+                d_kline=rec["d_kline"],
+                d_vol=rec["d_vol"],
+                d_chip=rec["d_chip"],
+                pct_kline=float(pct_k[i]),
+                pct_vol=pv,
+                pct_chip=pc,
+                winner_ratio=rec["winner_ratio"],
+                concentration=rec["concentration"],
+                recall_rank=rrank,
+                delta=None,
+            )
+        )
+    matches.sort(key=lambda m: (m.fused, m.d_kline, m.code))
+    out: list[Match] = []
+    for i, m in enumerate(matches, start=1):
+        out.append(
+            Match(
+                code=m.code,
+                fused=m.fused,
+                d_kline=m.d_kline,
+                d_vol=m.d_vol,
+                d_chip=m.d_chip,
+                pct_kline=m.pct_kline,
+                pct_vol=m.pct_vol,
+                pct_chip=m.pct_chip,
+                winner_ratio=m.winner_ratio,
+                concentration=m.concentration,
+                recall_rank=m.recall_rank,
+                delta=(m.recall_rank - i) if m.recall_rank is not None else None,
+            )
+        )
+    return out, rw

@@ -9,6 +9,7 @@ from whaletrail.similarity import (
     pair_l1,
     rank_multi,
     rank_similar,
+    retrieve_rank,
 )
 
 
@@ -108,3 +109,33 @@ def test_exclude_st_drops_last_bar_st():
 
 def test_normalize_flat_is_zeros():
     assert np.allclose(normalize([3, 3, 3]), 0)
+
+
+def test_retrieve_rank_kline_gate_then_volume_rerank():
+    n = 40
+    target = np.linspace(10, 12, n)
+    like = target + 0.02
+    like_bad = target + 0.05
+    far = np.sin(np.linspace(0, 9, n)) * 5 + 20
+    turn_t = np.ones(n)
+    turn_t[20:25] = 8.0
+    turn_shift = np.ones(n)
+    turn_shift[0:5] = 8.0
+    matches, used = retrieve_rank(
+        _bars(target, turn=turn_t),
+        {
+            "like": _bars(like, turn=turn_t),
+            "like_bad": _bars(like_bad, turn=turn_shift),
+            "far": _bars(far, turn=turn_t),
+        },
+        recall_n=2,
+        rank_weights={"volume": 1, "chip": 0},
+        exclude_st=False,
+    )
+    codes = [m.code for m in matches]
+    assert "far" not in codes
+    assert set(codes) == {"like", "like_bad"}
+    assert codes[0] == "like"
+    assert matches[0].recall_rank == 1
+    assert matches[0].delta is not None
+    assert "volume" in used

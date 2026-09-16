@@ -12,7 +12,7 @@ whaletrail/
 ├── metrics/       收益/回撤/夏普/胜率/盈亏比（FIFO 计算 PnL）
 ├── reporting/     watchlist Markdown 报表
 ├── storage/       SQLite（runs / trades / snapshots / daily_kline / ashare_*）
-├── similarity.py  收盘 DTW + 换手对齐 L1 + 分位融合（rank_multi）
+├── similarity.py  收盘 DTW 召回 + 换手 L1/筹码 EMD 重排（retrieve_rank；rank_multi 仍保留）
 ├── chips.py       窗口内 CYQ 直方图 + 1 维 Wasserstein
 └── indicators.py  共享指标（sma / atr / cross_signal）
 ```
@@ -29,7 +29,7 @@ tvscreener ─► TVScreenerSource ─► quote_snapshots ─► build_daily_his
                                           └────────► watchlist_report.md
 
 baostock  ─► BaostockSource ─► daily_kline / ashare_universe / ashare_industry / ashare_index_constituents
-                                          └────────► dashboard 相似选股（daily_bars → rank_multi：K/换手/筹码）
+                                          └────────► dashboard 相似选股（daily_bars → retrieve_rank：K 召回，量/筹重排）
 ```
 
 ## 数据层组合
