@@ -6,7 +6,7 @@ Deep links: /?page=gold|ashare|similar|kol|genzhuang
 """
 from __future__ import annotations
 
-import json, subprocess, sys, urllib.request
+import json, logging, subprocess, sys, time, urllib.request
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -967,6 +967,36 @@ def _fmt_dist(v) -> float | None:
     return round(float(v), 4)
 
 
+def _similar_logger() -> logging.Logger:
+    log = logging.getLogger("whaletrail.similar")
+    if log.handlers:
+        return log
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    path = ROOT / "logs" / "similar-scan.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(path, encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    log.addHandler(fh)
+    return log
+
+
+def _slice_bars_by_dates(
+    bars: dict[str, dict[str, list]], start: date, end: date
+) -> dict[str, dict[str, list]]:
+    """Keep bars whose trade_date sits in [start, end]. Inclusive."""
+    lo, hi = start.isoformat(), end.isoformat()
+    out: dict[str, dict[str, list]] = {}
+    for code, rec in bars.items():
+        dates = rec.get("trade_date") or []
+        keep = [i for i, d in enumerate(dates) if lo <= str(d)[:10] <= hi]
+        if len(keep) < 2:
+            continue
+        a, z = keep[0], keep[-1] + 1
+        out[code] = {k: (v[a:z] if isinstance(v, list) else v) for k, v in rec.items()}
+    return out
+
+
 def _chip_of(bars: dict, slice_n: int):
     if not (bars.get("turn") and bars.get("high") and bars.get("low") and bars.get("close")):
         return None
@@ -999,9 +1029,9 @@ def page_similar() -> None:
     )
     r1c1, r1c2, r1c3, r1c4, r1c5 = st.columns([1.1, 1, 1, 1.4, 0.8])
     with r1c2:
-        recall_n = st.number_input("召回池", min_value=20, max_value=200, value=DEFAULT_RECALL_N, step=10)
+        recall_n = st.number_input("召回池", min_value=20, max_value=200, value=DEFAULT_RECALL_N, step=10, key="similar_recall_n")
     with r1c3:
-        top_n = st.number_input("显示", min_value=5, max_value=80, value=40, step=5)
+        top_n = st.number_input("显示", min_value=5, max_value=80, value=40, step=5, key="similar_top_n")
     with r1c4:
         vol_share = st.slider(
             "重排 量 ←→ 筹",
@@ -1032,7 +1062,7 @@ def page_similar() -> None:
             mark_end = st.date_input("圈定终点（图上黄带）", value=date.today(), key="similar_mark_end")
         if mark_end < mark_start:
             st.warning("圈定终点早于起点。"); return
-        st.caption("黄带只画在模板 K 上。要用这两天做扫描，请改选「固定起止日」。")
+        st.caption("黄带 = 扫描窗口。改这两天再点金色按钮，才会按新区间召回。")
     else:
         with r1c1:
             st.caption("区间在下一行")
@@ -1073,17 +1103,15 @@ def page_similar() -> None:
     default = next((c for c in ("sh.601899", "SSE:601899") if c in filtered), filtered[0])
     ref = st.selectbox("参考标的", filtered, index=filtered.index(default), format_func=_label)
 
-    if win is not None:
-        eligible = {c: b for c, b in bars.items() if _n(b) >= win}
-        need, slice_n = win, win
-    else:
-        ref_n = _n(bars.get(ref, {}))
-        need = max(ref_n, 10)
-        eligible = {c: b for c, b in bars.items() if _n(b) >= need}
-        slice_n = _n(bars.get(ref, {}))
+    scan_bars = _slice_bars_by_dates(bars, mark_start, mark_end)
+    ref_n = _n(scan_bars.get(ref, {}))
+    need = max(10, int(ref_n * 0.85)) if ref_n else 10
+    eligible = {c: b for c, b in scan_bars.items() if _n(b) >= need}
+    slice_n = ref_n
+    scan_win = None  # already sliced to the marked dates
     skipped = len(bars) - len(eligible)
     if ref not in eligible:
-        st.info(f"参考标的窗口内不足 {need} 根，缩小窗口或换一只 / 换区间。")
+        st.info(f"参考标的在 {mark_start}～{mark_end} 不足 {need} 根，换区间或换一只。")
         return
 
     ohlc_ctx = _template_ohlc(ref, k_start, k_end)
@@ -1091,25 +1119,25 @@ def page_similar() -> None:
     if preview in ("日 K", "K + 筹码"):
         _sec("模板 · 日 K")
         _render_kline_panel(ohlc_ctx, _label(ref), mark_start=mark_start, mark_end=mark_end)
-        if win is not None:
-            st.caption("黄带=圈定区间（看图用）。召回用最近 N 个交易日，不是黄带本身。量柱是手数。")
-        else:
-            st.caption("黄带=固定对比窗口，与召回同一段。量柱是手数。")
+        st.caption(f"黄带 = 扫描窗口 {mark_start} → {mark_end}（{slice_n} 根）。量柱是手数。")
     if preview in ("筹码", "K + 筹码"):
         _sec("模板 · 筹码")
         hist_ref = _chip_of(eligible[ref], slice_n)
         if hist_ref is not None:
             _render_chip_hist(hist_ref, _label(ref), title="窗口内本地 CYQ · 不复权")
-            st.caption("筹码按召回窗口算（最近 N 根或固定起止），相对价轴。除权日附近会失真。")
+            st.caption("筹码按黄带/固定窗口算，相对价轴。除权日附近会失真。")
         else:
             st.caption("无换手，筹码通道关闭。重排只走换手（若有）。")
 
     st.caption(
-        f"{source_label} · 满窗口 {len(eligible)} 只 · 丢掉短序列 {skipped}"
-        + (f" · 窗口 {need} 根" if need else "")
+        f"{source_label} · 扫描 {mark_start}→{mark_end} · {slice_n} 根 · "
+        f"满窗口 {len(eligible)} 只 · 丢掉短序列 {skipped}"
     )
 
-    sig = (ref, win, k_start, k_end, int(recall_n), int(vol_share), bool(exclude_st))
+    sig = (
+        ref, mark_start.isoformat(), mark_end.isoformat(),
+        int(recall_n), int(vol_share), bool(exclude_st),
+    )
     st.markdown(
         '<div class="similar-cta"><div class="similar-cta-kicker">SCAN · 相似选股</div>'
         '<p class="similar-cta-sub">先按收盘波形从全市场召回，再在池内按换手 + 筹码精排。点下面按钮开始。</p></div>',
@@ -1117,23 +1145,53 @@ def page_similar() -> None:
     )
     clicked = st.button("相似选股（K线召回 + 量筹精排）", type="primary", width="stretch", key="similar_scan_btn")
     if clicked:
+        t0 = time.perf_counter()
         with st.spinner(f"召回 {len(eligible)} 只满窗口标的…"):
             ranked, used_w = retrieve_rank(
                 eligible[ref],
                 eligible,
-                window=win,
+                window=scan_win,
                 recall_n=int(recall_n),
                 rank_weights=rank_weights,
                 exclude_st=exclude_st,
             )
+        elapsed = time.perf_counter() - t0
         ranked = [m for m in ranked if m.code != ref]
+        sidike = next(({"rank": i, "recall": m.recall_rank, "corr": m.close_corr, "fused": m.fused}
+                       for i, m in enumerate(ranked, start=1) if m.code == "sz.300806"), None)
+        payload = {
+            "ref": ref,
+            "ref_name": names.get(ref),
+            "start": mark_start.isoformat(),
+            "end": mark_end.isoformat(),
+            "bars": slice_n,
+            "eligible": len(eligible),
+            "recall_n": int(recall_n),
+            "top_n": int(top_n),
+            "vol": int(vol_share),
+            "chip": int(100 - vol_share),
+            "exclude_st": bool(exclude_st),
+            "elapsed_s": round(elapsed, 2),
+            "top20": [m.code for m in ranked[:20]],
+            "sz.300806": sidike,
+        }
+        _similar_logger().info(json.dumps(payload, ensure_ascii=False))
         st.session_state["similar_scan"] = {
             "sig": sig, "ranked": ranked, "used_w": used_w, "slice_n": slice_n,
+            "elapsed": elapsed, "payload": payload,
         }
     state = st.session_state.get("similar_scan")
     if not state or state.get("sig") != sig:
         return
     ranked, used_w, slice_n = state["ranked"], state["used_w"], state["slice_n"]
+    pl = state.get("payload") or {}
+    if pl:
+        st.info(
+            f"本次扫描窗口 **{pl.get('start')} → {pl.get('end')}**（{pl.get('bars')} 根）· "
+            f"模板 {pl.get('ref_name') or pl.get('ref')} · 召回 {len(ranked)} · 显示 {int(top_n)} · "
+            f"量{pl.get('vol')}/筹{pl.get('chip')} · {pl.get('elapsed_s')}s。"
+            "改日期或模板后必须再点金色按钮。"
+        )
     if not ranked:
         st.caption("无有效候选（短序列已丢掉）")
         return
