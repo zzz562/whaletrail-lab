@@ -83,7 +83,10 @@ section[data-testid="stSidebar"], [data-testid="stSidebar"], [data-testid="stSid
 .brand-title { font-weight:800; font-size:1.05rem; }
 .brand-sub { font-size:10px; letter-spacing:.18em; color:var(--wt-gold); font-weight:700; margin-top:2px; }
 [data-testid="stDataFrame"] { border:1px solid var(--wt-border); border-radius:10px; overflow:hidden; }
-[data-testid="stVegaLiteChart"] { border:1px solid var(--wt-border); border-radius:10px; padding:6px; background:var(--wt-surface); }
+[data-testid="stVegaLiteChart"] { border:1px solid var(--wt-border); border-radius:10px; padding:6px; background:var(--wt-surface); overflow:hidden; max-width:100%; }
+[data-testid="stVegaLiteChart"] > div, [data-testid="stVegaLiteChart"] svg { max-width:100% !important; }
+[data-testid="stHorizontalBlock"] { gap:1.25rem; align-items:flex-start; }
+[data-testid="column"] { min-width:0; overflow:hidden; }
 .stButton > button { background:var(--wt-surface); border:1px solid var(--wt-border); color:var(--wt-text); border-radius:8px; font-weight:600; }
 </style>""", unsafe_allow_html=True)
 
@@ -785,52 +788,49 @@ def _similarity_universe(
         names[item.tv_symbol] = item.name
     return bars, names, f"A股 watchlist {len(bars)} 只 · tvscreener 快照积累（仅 trailing，无换手/筹码）"
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _template_ohlc(code: str, start: str | None, end: str | None) -> pd.DataFrame:
-    """Template-stock OHLC from daily_kline. Empty frame if missing."""
-    try:
-        repo = Repository(DB_PATH)
-        rows = repo.daily_ohlc(code, start=start, end=end)
-        repo.close()
-    except Exception:
+_PAIR_SCALE = alt.Scale(range=["#e6b450", "#38bdf8"])
+_CHART_W = 980
+
+
+def _ohlc_from_bars(bars: dict, slice_n: int) -> pd.DataFrame:
+    """Last *slice_n* bars as an OHLC frame. Empty if the slice is unusable."""
+    n = int(slice_n)
+    dates = bars.get("trade_date") or []
+    if len(dates) < 2:
         return pd.DataFrame()
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df["trade_date"] = pd.to_datetime(df["trade_date"])
-    for col in ("open", "high", "low", "close", "volume", "turn"):
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    def _tail(key: str) -> list:
+        xs = bars.get(key) or []
+        return xs[-n:]
+    data = {
+        "trade_date": pd.to_datetime(_tail("trade_date")),
+        "open": pd.to_numeric(_tail("open"), errors="coerce"),
+        "high": pd.to_numeric(_tail("high"), errors="coerce"),
+        "low": pd.to_numeric(_tail("low"), errors="coerce"),
+        "close": pd.to_numeric(_tail("close"), errors="coerce"),
+        "volume": pd.to_numeric(_tail("volume"), errors="coerce"),
+    }
+    if bars.get("turn"):
+        data["turn"] = pd.to_numeric(_tail("turn"), errors="coerce")
+    df = pd.DataFrame(data)
     return df.dropna(subset=["open", "high", "low", "close"])
 
-def _render_template_kline(
-    df: pd.DataFrame,
-    mark_start: date,
-    mark_end: date,
-    title: str,
-    width: int = 980,
-    k_height: int = 220,
-    v_height: int = 70,
-) -> None:
-    """Daily K + volume; yellow band is the scan window (not a trade range)."""
+
+def _render_kline_panel(df: pd.DataFrame, title: str, width: int = _CHART_W) -> None:
+    """Window-only daily K + volume. Own price axis — never dual-axis overlay."""
     if df.empty:
-        st.info("模板股该区间无日 K（baostock/daily_kline 缺行）。空图，不编 OHLC。")
+        st.info("该窗口无日 K。空图，不编 OHLC。")
         return
     plot = df.copy()
     plot["up"] = plot["close"] >= plot["open"]
-    lo, hi = pd.Timestamp(mark_start), pd.Timestamp(mark_end)
-    band = alt.Chart(pd.DataFrame({"x": [lo], "x2": [hi]})).mark_rect(opacity=0.18, color="#e6b450").encode(
-        x="x:T", x2="x2:T"
-    )
-    rules = alt.Chart(plot).mark_rule().encode(
-        x="trade_date:T", y="low:Q", y2="high:Q",
-        color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
-    )
     tips = ["trade_date:T", "open:Q", "high:Q", "low:Q", "close:Q"]
     if "volume" in plot.columns:
         tips.append("volume:Q")
     if "turn" in plot.columns:
         tips.append("turn:Q")
+    rules = alt.Chart(plot).mark_rule().encode(
+        x="trade_date:T", y="low:Q", y2="high:Q",
+        color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
+    )
     candles = alt.Chart(plot).mark_bar(size=5).encode(
         x=alt.X("trade_date:T", title=None),
         y=alt.Y("open:Q", title=None),
@@ -838,14 +838,14 @@ def _render_template_kline(
         color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
         tooltip=tips,
     )
-    kline = (band + rules + candles).properties(height=k_height, width=width, title=title)
+    kline = (rules + candles).properties(height=200, width=width, title=title)
     if "volume" in plot.columns and plot["volume"].notna().any():
         vol = alt.Chart(plot).mark_bar(size=5).encode(
             x=alt.X("trade_date:T", title=None),
             y=alt.Y("volume:Q", title="量"),
             color=alt.condition("datum.up", alt.value("#f87171"), alt.value("#4ade80")),
             tooltip=tips,
-        ).properties(height=v_height, width=width)
+        ).properties(height=64, width=width)
         ch = alt.vconcat(kline, vol).resolve_scale(x="shared")
     else:
         ch = kline
@@ -853,7 +853,7 @@ def _render_template_kline(
 
 
 def _render_chip_hist(
-    hist_a, name_a: str, hist_b=None, name_b: str | None = None, title: str = ""
+    hist_a, name_a: str, hist_b=None, name_b: str | None = None, title: str = "", width: int = _CHART_W
 ) -> None:
     rows = []
     n = len(hist_a)
@@ -863,37 +863,52 @@ def _render_chip_hist(
         n2 = len(hist_b)
         for i, v in enumerate(hist_b):
             rows.append({"rel": (i + 0.5) / n2, "mass": float(v), "series": name_b})
+    color = (
+        alt.Color("series:N", scale=_PAIR_SCALE, legend=alt.Legend(title=None, orient="top"))
+        if hist_b is not None
+        else alt.Color("series:N", legend=None)
+    )
     ch = alt.Chart(pd.DataFrame(rows)).mark_bar(opacity=0.55, size=8).encode(
-        x=alt.X("rel:Q", title="相对价位 0=窗口最低"),
+        x=alt.X("rel:Q", title="相对价位 0=该票窗口最低"),
         y=alt.Y("mass:Q", title="筹码质量"),
-        color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top")),
+        color=color,
         tooltip=["series", "rel", "mass"],
-    ).properties(height=220, width=460 if hist_b is None else 980, title=title or None)
+    ).properties(height=180, width=width, title=title or None)
     st.altair_chart(_alt_dark(ch), width="stretch")
 
 
-def _overlay_series(codes: list[str], eligible: dict, names: dict, key: str, slice_n: int, title: str, y_title: str) -> None:
+def _overlay_pair(
+    eligible: dict,
+    ref: str,
+    pick: str,
+    names: dict,
+    key: str,
+    slice_n: int,
+    title: str,
+    y_title: str,
+    do_norm: bool,
+) -> None:
+    """Two-series overlay. *do_norm* min-maxes each name onto [0,1] (price shape).
+    Leave it off when the unit is already comparable (换手 %)."""
     chart_rows = []
-    for code in codes:
-        raw = eligible[code].get(key) or eligible[code].get("close")
+    for code in (ref, pick):
+        raw = (eligible.get(code) or {}).get(key)
         if not raw:
             continue
         tail = raw[-slice_n:]
         vals = [0.0 if x is None or x != x else float(x) for x in tail]
-        series = normalize(vals)
-        chart_rows.extend(
-            {"t": i, "value": float(v), "series": names.get(code) or code}
-            for i, v in enumerate(series)
-        )
+        series = normalize(vals) if do_norm else vals
+        label = names.get(code) or code
+        chart_rows.extend({"t": i, "value": float(v), "series": label} for i, v in enumerate(series))
     if not chart_rows:
         st.caption(f"{title}：无序列")
         return
     line = alt.Chart(pd.DataFrame(chart_rows)).mark_line(strokeWidth=2).encode(
         x=alt.X("t:Q", title="窗口内第 N 个交易日"),
         y=alt.Y("value:Q", title=y_title),
-        color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top")),
+        color=alt.Color("series:N", scale=_PAIR_SCALE, legend=alt.Legend(title=None, orient="top")),
         tooltip=["series", "t", "value"],
-    ).properties(height=200, width=460, title=title)
+    ).properties(height=200, width=_CHART_W, title=title)
     st.altair_chart(_alt_dark(line), width="stretch")
 
 def _fmt_dist(v) -> float | None:
@@ -996,28 +1011,19 @@ def page_similar() -> None:
         st.info(f"参考标的窗口内不足 {need} 根，缩小窗口或换一只 / 换区间。")
         return
 
-    ohlc = _template_ohlc(ref, k_start, k_end)
-    if win is not None and not ohlc.empty:
-        tail = ohlc.tail(win)
-        mark_start = tail["trade_date"].iloc[0].date()
-        mark_end = tail["trade_date"].iloc[-1].date()
-    elif mark_start is None:
-        mark_start = date.fromisoformat(k_start)
-        mark_end = date.fromisoformat(k_end)
-
-    left, right = st.columns(2)
-    with left:
-        _sec("模板 · 日 K")
-        _render_template_kline(ohlc, mark_start, mark_end, title=_label(ref), width=460)
-        st.caption("黄带=对比窗口。量柱是手数；召回用收盘，重排用换手。")
-    with right:
+    ohlc_win = _ohlc_from_bars(eligible[ref], slice_n)
+    scanned = bool(st.session_state.get("similar_scan"))
+    with st.expander("模板预览", expanded=not scanned):
+        _sec("模板 · 日 K（对比窗口）")
+        _render_kline_panel(ohlc_win, _label(ref))
+        st.caption("只画对比窗口，和召回/重排同一段。量柱是手数；召回用收盘，重排用换手。")
         _sec("模板 · 筹码")
         hist_ref = _chip_of(eligible[ref], slice_n)
         if hist_ref is not None:
             _render_chip_hist(hist_ref, _label(ref), title="窗口内本地 CYQ · 不复权")
             st.caption("相对价轴。除权日附近会失真。")
         else:
-            st.caption("无换手，筹码通道关闭。重排只走换手 L1（若有 volume/turn）。")
+            st.caption("无换手，筹码通道关闭。重排只走换手（若有）。")
 
     st.caption(
         f"{source_label} · 满窗口 {len(eligible)} 只 · 丢掉短序列 {skipped}"
@@ -1066,36 +1072,79 @@ def page_similar() -> None:
             "集中": None if m.concentration is None else round(m.concentration, 3),
         })
     df = pd.DataFrame(rows)
-    styled = _style_base(df.style.hide(axis="index"))
-    if "Δ" in df.columns:
-        def _delta_css(v):
-            s = "" if v is None else str(v)
-            if s.startswith("+"):
-                return "color:#4ade80;font-weight:600"
-            if s.startswith("-"):
-                return "color:#f87171;font-weight:600"
-            return "color:#8b98a9"
-        styled = styled.map(_delta_css, subset=["Δ"])
-    _show(styled, width="stretch")
+    pick_codes = [m.code for m in shown]
+    pick = pick_codes[0]
+    try:
+        event = st.dataframe(
+            df,
+            hide_index=True,
+            width="stretch",
+            on_select="rerun",
+            selection_mode="single-row",
+            key="similar_tbl",
+        )
+        sel_rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
+        if sel_rows:
+            idx = int(sel_rows[0])
+            if 0 <= idx < len(pick_codes):
+                pick = pick_codes[idx]
+    except TypeError:
+        styled = _style_base(df.style.hide(axis="index"))
+        _show(styled, width="stretch")
+        pick = st.selectbox("对照个股", pick_codes, format_func=_label)
     st.caption(
-        f"召回 {len(ranked)} · 显示 {len(shown)} · 重排 {wtxt}。"
+        f"点表选一只做 1v1。召回 {len(ranked)} · 显示 {len(shown)} · 重排 {wtxt}。"
         "Δ = 召回名次 − 重排名次，正数=量和筹往前抬。"
         "观察用，不是选股结论。"
         + (" 已排除 ST。" if exclude_st else "")
     )
 
-    _sec("对照一只")
-    pick = st.selectbox("对照", [m.code for m in shown], format_func=_label)
-    c1, c2 = st.columns(2)
-    vol_key = "turn" if eligible[ref].get("turn") else "volume"
-    with c1:
-        _overlay_series([ref, pick], eligible, names, "close", slice_n, "归一化收盘", "0–1")
-    with c2:
-        _overlay_series([ref, pick], eligible, names, vol_key, slice_n, "归一化换手", "0–1")
+    m_pick = next((m for m in shown if m.code == pick), shown[0])
+    pick = m_pick.code
+    _sec(f"1v1 对照 · {_label(ref)}  vs  {_label(pick)}")
+    _card_row(
+        [
+            {"label": "K DTW", "value": f"{m_pick.d_kline:.2f}", "sub": "越小越像波形"},
+            {
+                "label": "量 L1",
+                "value": "—" if _fmt_dist(m_pick.d_vol) is None else f"{m_pick.d_vol:.3f}",
+                "sub": "换手节奏",
+            },
+            {
+                "label": "筹码 EMD",
+                "value": "—" if _fmt_dist(m_pick.d_chip) is None else f"{m_pick.d_chip:.3f}",
+                "sub": "成本分布",
+            },
+            {
+                "label": "Δ",
+                "value": "—" if m_pick.delta is None else (f"+{m_pick.delta}" if m_pick.delta > 0 else str(m_pick.delta)),
+                "sub": "召回名次变化",
+                "accent": "#4ade80" if (m_pick.delta or 0) > 0 else ("#f87171" if (m_pick.delta or 0) < 0 else "#e6b450"),
+            },
+        ],
+        cols=4,
+    )
+    st.caption("两根日 K 各用自己的价格轴，不把 10 元和 1000 元叠到双 Y 上。波形对比走下面的归一化叠线；换手 % 已经同单位，直接叠。")
+    _render_kline_panel(_ohlc_from_bars(eligible[ref], slice_n), f"模板 · {_label(ref)}")
+    _render_kline_panel(_ohlc_from_bars(eligible[pick], slice_n), f"对照 · {_label(pick)}")
+    _overlay_pair(
+        eligible, ref, pick, names, "close", slice_n,
+        "归一化收盘（形状）", "0–1", True,
+    )
+    if eligible[ref].get("turn") and eligible[pick].get("turn"):
+        _overlay_pair(
+            eligible, ref, pick, names, "turn", slice_n,
+            "换手 %（同单位，不归一化）", "换手 %", False,
+        )
+    else:
+        _overlay_pair(
+            eligible, ref, pick, names, "volume", slice_n,
+            "归一化成交量（无换手时的降级）", "0–1", True,
+        )
     h_ref = _chip_of(eligible[ref], slice_n)
     h_pick = _chip_of(eligible.get(pick, {}), slice_n)
     if h_ref is not None and h_pick is not None:
-        _render_chip_hist(h_ref, _label(ref), h_pick, _label(pick))
+        _render_chip_hist(h_ref, _label(ref), h_pick, _label(pick), title="筹码 1v1 · 相对价轴")
     else:
         st.caption("无换手，不做筹码对照。")
 
