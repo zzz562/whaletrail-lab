@@ -180,6 +180,77 @@ def normalize_weights(weights: Mapping[str, float] | None) -> dict[str, float]:
     return {k: v / total for k, v in active.items()}
 
 
+def tail_bars(
+    bars: Mapping[str, Sequence[float]], n: int
+) -> dict[str, Sequence[float]]:
+    """*bars* cut to its last *n* entries per column — the recent-shape slice.
+
+    A scan compares a template's marked historical window against each
+    candidate's own most recent window of that same length, so both sides
+    carry their own dates and only the shape lines up.
+    """
+    keep = max(1, int(n))
+    return {
+        k: (v[-keep:] if isinstance(v, (list, tuple, np.ndarray)) else v)
+        for k, v in bars.items()
+    }
+
+
+def slice_by_dates(
+    bars: Mapping[str, Mapping[str, Sequence[float]]], lo: str, hi: str
+) -> dict[str, dict[str, Sequence[float]]]:
+    """Keep the bars whose ``trade_date`` falls in the inclusive [lo, hi] range.
+
+    Bounds are ISO date strings so they compare lexically.  Names left with
+    fewer than two bars are dropped.
+    """
+    out: dict[str, dict[str, Sequence[float]]] = {}
+    for code, rec in bars.items():
+        dates = rec.get("trade_date") or []
+        keep = [i for i, d in enumerate(dates) if lo <= str(d)[:10] <= hi]
+        if len(keep) < 2:
+            continue
+        a, z = keep[0], keep[-1] + 1
+        out[code] = {
+            k: (v[a:z] if isinstance(v, (list, tuple, np.ndarray)) else v)
+            for k, v in rec.items()
+        }
+    return out
+
+
+def build_scan_pool(
+    bars: Mapping[str, Mapping[str, Sequence[float]]],
+    ref: str,
+    lo: str,
+    hi: str,
+    min_bars: int = 10,
+) -> tuple[dict[str, Sequence[float]], dict[str, dict[str, Sequence[float]]], int] | None:
+    """Template window for *ref*, own most-recent window for every other name.
+
+    The marked dates are the template's demo waveform and data; every candidate
+    is cut to its last *n* bars (n = template length, ending at its own newest
+    session), so the scan matches shapes, not calendars.  Returns
+    ``(template, pool, n)``, or ``None`` when *ref* has fewer than *min_bars*
+    bars inside the marked window.
+    """
+    template = slice_by_dates(bars, lo, hi).get(ref)
+    if template is None:
+        return None
+    close = template.get("close")
+    if close is None:
+        return None
+    n = len(close)
+    if n < min_bars:
+        return None
+    need = max(min_bars, int(n * 0.85))
+    pool: dict[str, dict[str, Sequence[float]]] = {ref: template}
+    for code, rec in bars.items():
+        cand_close = rec.get("close")
+        if code != ref and cand_close is not None and len(cand_close) >= need:
+            pool[code] = tail_bars(rec, n)
+    return template, pool, n
+
+
 def _tail_slice(values: Sequence[float] | np.ndarray, window: int | None) -> np.ndarray:
     arr = np.asarray(values, dtype=float)
     if window:

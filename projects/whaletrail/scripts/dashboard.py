@@ -7,7 +7,7 @@ Deep links: /?page=gold|ashare|similar|kol|genzhuang
 from __future__ import annotations
 
 import json, logging, subprocess, sys, time, urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -26,6 +26,7 @@ from whaletrail.similarity import (
     DEFAULT_RANK_WEIGHTS,
     DEFAULT_RECALL_N,
     RANK_PRESETS,
+    build_scan_pool,
     normalize,
     retrieve_rank,
 )
@@ -963,20 +964,20 @@ def _similar_logger() -> logging.Logger:
     return log
 
 
-def _slice_bars_by_dates(
-    bars: dict[str, dict[str, list]], start: date, end: date
-) -> dict[str, dict[str, list]]:
-    """Keep bars whose trade_date sits in [start, end]. Inclusive."""
-    lo, hi = start.isoformat(), end.isoformat()
-    out: dict[str, dict[str, list]] = {}
-    for code, rec in bars.items():
-        dates = rec.get("trade_date") or []
-        keep = [i for i, d in enumerate(dates) if lo <= str(d)[:10] <= hi]
-        if len(keep) < 2:
-            continue
-        a, z = keep[0], keep[-1] + 1
-        out[code] = {k: (v[a:z] if isinstance(v, list) else v) for k, v in rec.items()}
-    return out
+@st.cache_data(ttl=3600, show_spinner=False)
+def _ref_deep_history(code: str, start: str) -> dict[str, dict[str, list]]:
+    """The reference name's own bars from *start*, one symbol only.
+
+    A template window can reach further back than the universe fetch; pulling
+    deep history for just the template keeps that cheap.
+    """
+    try:
+        repo = Repository(DB_PATH)
+        bars = repo.daily_bars(start=start, codes=[code])
+        repo.close()
+        return bars
+    except Exception:
+        return {}
 
 
 def _chip_of(bars: dict, slice_n: int):
@@ -993,8 +994,8 @@ def _chip_of(bars: dict, slice_n: int):
 
 
 def page_similar() -> None:
-    _page_header("相似选股", "K 线召回 · 换手+筹码重排 · 观察工具 · 不扩可交易名单")
-    _note("对比窗口对模板和全市场是同一段近端走势，不是两套日期。默认近 90 个交易日。形态近不等于可交易。")
+    _page_header("相似选股", "模板历史窗 × 候选最近窗 · K 线召回 · 换手+筹码重排 · 观察工具")
+    _note("圈定的日期只切模板（demo 波形和数据）。候选股一律取各自最近同样根数的交易日跟模板比形状，不看日期对齐。形态近不等于可交易。")
 
     preset = st.radio(
         "精排偏好",
@@ -1008,9 +1009,9 @@ def page_similar() -> None:
     default_end = date.today()
     default_start = default_end - pd.Timedelta(days=126).to_pytimedelta()
     with d1:
-        mark_start = st.date_input("窗口起点", value=default_start, key="similar_scan_start")
+        mark_start = st.date_input("模板窗口起点", value=default_start, key="similar_scan_start")
     with d2:
-        mark_end = st.date_input("窗口终点", value=default_end, key="similar_scan_end")
+        mark_end = st.date_input("模板窗口终点", value=default_end, key="similar_scan_end")
     with r1c2:
         recall_n = st.number_input("召回池", min_value=20, max_value=200, value=DEFAULT_RECALL_N, step=10, key="similar_recall_n")
     with r1c3:
@@ -1029,7 +1030,7 @@ def page_similar() -> None:
     if mark_end < mark_start:
         st.warning("窗口终点早于起点。")
         return
-    st.caption("这段日期同时切模板和全市场。改日期后要点金色按钮才重新扫。")
+    st.caption("这段日期只切模板股：它自己那段历史就是 demo 波形。候选股取各自最近 N 个交易日（N = 模板根数，尾部＝最新交易日）。改条件后要点金色按钮才重新扫。")
 
     bars, names, source_label = _similarity_universe()
     if not bars:
@@ -1039,9 +1040,6 @@ def page_similar() -> None:
     def _label(code: str) -> str:
         name = names.get(code) or ""
         return f"{name} ({code})" if name else code
-
-    def _n(b: dict) -> int:
-        return len(b.get("close") or [])
 
     all_codes = sorted(bars.keys())
     q = st.text_input("选模板股票（代码或名称）", placeholder="远东 或 600869")
@@ -1058,34 +1056,42 @@ def page_similar() -> None:
     default = next((c for c in ("sh.601899", "SSE:601899") if c in filtered), filtered[0])
     ref = st.selectbox("参考标的", filtered, index=filtered.index(default), format_func=_label)
 
-    scan_bars = _slice_bars_by_dates(bars, mark_start, mark_end)
-    ref_n = _n(scan_bars.get(ref, {}))
-    need = max(10, int(ref_n * 0.85)) if ref_n else 10
-    eligible = {c: b for c, b in scan_bars.items() if _n(b) >= need}
-    slice_n = ref_n
-    scan_win = None  # already sliced to the marked dates
-    skipped = len(bars) - len(eligible)
-    if ref not in eligible:
-        st.info(f"参考标的在 {mark_start}～{mark_end} 不足 {need} 根，换区间或换一只。")
+    recent_start = (date.today() - timedelta(days=420)).isoformat()
+    scan_input = bars
+    deep: dict = {}
+    if mark_start.isoformat() < recent_start:
+        deep = _ref_deep_history(ref, mark_start.isoformat())
+        if deep.get(ref):
+            scan_input = {**bars, ref: deep[ref]}
+    built = build_scan_pool(scan_input, ref, mark_start.isoformat(), mark_end.isoformat())
+    if built is None:
+        st.info(f"参考标的在 {mark_start}～{mark_end} 不足 10 根，换区间或换一只。")
         return
+    template_bars, eligible, slice_n = built
+    scan_win = None  # both sides already sliced to their own window
+    skipped = len(bars) - len(eligible)
+    cand_end = max(
+        (str((b.get("trade_date") or [""])[-1])[:10] for b in bars.values()), default=""
+    )
 
     preview = st.radio("模板预览", ("日 K", "筹码", "K + 筹码"), horizontal=True, key="similar_tpl_view")
     if preview in ("日 K", "K + 筹码"):
         _sec("模板 · 日 K")
-        _render_kline_panel(_ohlc_from_bars(eligible[ref], slice_n), _label(ref))
-        st.caption(f"扫描窗口 {mark_start} → {mark_end}（{slice_n} 根），模板和全市场同一段。")
+        _render_kline_panel(_ohlc_from_bars(template_bars, slice_n), _label(ref))
+        st.caption(f"模板窗口 {mark_start} → {mark_end}（{slice_n} 根）· demo 波形。候选按各自最近 {slice_n} 根比。")
     if preview in ("筹码", "K + 筹码"):
         _sec("模板 · 筹码")
-        hist_ref = _chip_of(eligible[ref], slice_n)
+        hist_ref = _chip_of(template_bars, slice_n)
         if hist_ref is not None:
-            _render_chip_hist(hist_ref, _label(ref), title="窗口内本地 CYQ · 不复权")
-            st.caption("和上面同一段窗口。除权日附近会失真。")
+            _render_chip_hist(hist_ref, _label(ref), title="模板窗口内本地 CYQ · 不复权")
+            st.caption("模板窗口内的本地 CYQ；候选筹码各自取最近窗。除权日附近会失真。")
         else:
             st.caption("无换手，筹码通道关闭。重排只走换手（若有）。")
 
     st.caption(
-        f"{source_label} · 扫描 {mark_start}→{mark_end} · {slice_n} 根 · "
-        f"满窗口 {len(eligible)} 只 · 丢掉短序列 {skipped}"
+        f"{source_label} · 模板 {mark_start}→{mark_end} · {slice_n} 根"
+        f"{'（模板单独深取）' if deep else ''} · "
+        f"候选池 {len(eligible)} 只（各自最近 {slice_n} 根，尾部到 {cand_end or '—'}）· 丢掉短序列 {skipped}"
     )
 
     sig = (
@@ -1094,13 +1100,13 @@ def page_similar() -> None:
     )
     st.markdown(
         '<div class="similar-cta"><div class="similar-cta-kicker">SCAN · 相似选股</div>'
-        '<p class="similar-cta-sub">先按收盘波形从全市场召回，再在池内按换手 + 筹码精排。点下面按钮开始。</p></div>',
+        '<p class="similar-cta-sub">先按收盘波形召回（模板历史窗 × 候选最近窗），再在池内按换手 + 筹码精排。点下面按钮开始。</p></div>',
         unsafe_allow_html=True,
     )
     clicked = st.button("相似选股（K线召回 + 量筹精排）", type="primary", width="stretch", key="similar_scan_btn")
     if clicked:
         t0 = time.perf_counter()
-        with st.spinner(f"召回 {len(eligible)} 只满窗口标的…"):
+        with st.spinner(f"召回 {len(eligible)} 只候选（模板 {slice_n} 根 vs 各自最近 {slice_n} 根）…"):
             ranked, used_w = retrieve_rank(
                 eligible[ref],
                 eligible,
@@ -1118,6 +1124,7 @@ def page_similar() -> None:
             "ref_name": names.get(ref),
             "start": mark_start.isoformat(),
             "end": mark_end.isoformat(),
+            "cand_end": cand_end,
             "bars": slice_n,
             "eligible": len(eligible),
             "recall_n": int(recall_n),
@@ -1148,9 +1155,9 @@ def page_similar() -> None:
     stale = state.get("sig") != sig
     if pl:
         msg = (
-            f"扫描窗口 {pl.get('start')} → {pl.get('end')}（{pl.get('bars')} 根）· "
-            f"模板 {pl.get('ref_name') or pl.get('ref')} · 召回 {len(ranked)} · 显示 {int(top_n)} · "
-            f"量{pl.get('vol')}/筹{pl.get('chip')} · {pl.get('elapsed_s')}s"
+            f"模板 {pl.get('ref_name') or pl.get('ref')} {pl.get('start')} → {pl.get('end')}（{pl.get('bars')} 根）· "
+            f"候选取各自最近 {pl.get('bars')} 根到 {pl.get('cand_end') or '—'} · "
+            f"召回 {len(ranked)} · 显示 {int(top_n)} · 量{pl.get('vol')}/筹{pl.get('chip')} · {pl.get('elapsed_s')}s"
         )
         if stale:
             st.warning(msg + "。当前选项已改，这是上次结果；要按新条件请再点金色按钮。")
@@ -1222,7 +1229,7 @@ def page_similar() -> None:
         if hit_m is None:
             st.warning(
                 f"「{find_q}」不在本次召回 {len(ranked)} 只里。"
-                f"肉眼像不代表收盘 DTW 进前 {int(recall_n)}。加大召回池后再扫，或核对是否用了「固定起止日」。"
+                f"肉眼像不代表收盘 DTW 进前 {int(recall_n)}。加大召回池后再扫，或核对模板窗口是否取到了目标那段。"
             )
         else:
             pick = hit_m.code
@@ -1263,8 +1270,15 @@ def page_similar() -> None:
         cols=5,
     )
     st.caption("两根日 K 各用自己的价格轴，不把 10 元和 1000 元叠到双 Y 上。波形对比走下面的归一化叠线；换手 % 已经同单位，直接叠。")
-    _render_kline_panel(_ohlc_from_bars(view_bars.get(view_ref, {}), slice_n), f"模板 · {_label(view_ref)}")
-    _render_kline_panel(_ohlc_from_bars(view_bars.get(pick, {}), slice_n), f"对照 · {_label(pick)}")
+    _render_kline_panel(
+        _ohlc_from_bars(view_bars.get(view_ref, {}), slice_n),
+        f"模板 · {_label(view_ref)} · {pl.get('start') or '?'}→{pl.get('end') or '?'}",
+    )
+    _render_kline_panel(
+        _ohlc_from_bars(view_bars.get(pick, {}), slice_n),
+        f"对照 · {_label(pick)} · 最近 {slice_n} 根（到 {pl.get('cand_end') or '—'}）",
+    )
+    st.caption("模板是自己那段历史窗（demo），对照是它自己最近一段。横轴是窗口内第 N 个交易日，两边日期不对齐。")
     _overlay_pair(
         view_bars, view_ref, pick, names, "close", slice_n,
         "归一化收盘（形状）", "0–1", True,
