@@ -13,6 +13,7 @@
 | `ashare-paper.py` | A股低频率 paper（快照积累→日线→SMA 信号） | cron / 手动 |
 | `seed-ashare-history.py` | A股日线历史种子（tvdatafeed → quote_snapshots） | 手动 |
 | `watchlist-report.py` | SQLite → Markdown watchlist 报表 | cron / 手动 |
-| `ashare-similar.py` | 全市场相似选股 CLI（K 召回 + 量/筹重排，读 `daily_kline`） | 手动；Mac mini |
+| `ashare-similar.py` | 全市场相似选股 CLI（模板窗 vs 候选最近窗，K 召回 + 量/筹重排，读 `daily_kline`；`--start/--end` 选历史模板窗） | 手动；Mac mini |
+| `check-similar-parity.py` | 相似选股一致性自检：同窗下看板页与 `ashare-similar.py` 排名必须逐只一致 | 手动；Mac mini |
 
 策略注册表见 `whaletrail/strategy/registry.py`。
