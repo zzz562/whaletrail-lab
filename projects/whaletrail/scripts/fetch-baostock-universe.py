@@ -3,7 +3,8 @@
 
 Daily bars go to ``daily_kline`` (OHLCV + turn/tradestatus/pct_chg/is_st/
 pe_ttm/pb_mrq).  Static snapshots: ``ashare_universe`` (ipo/status),
-``ashare_industry`` (申万一级), ``ashare_index_constituents`` (sz50/hs300/zz500).
+``ashare_industry`` (证监会行业分类), ``ashare_index_constituents``
+(sz50/hs300/zz500).  Benchmark index daily bars go to ``index_kline``.
 
 Same source as the DTW similarity scan.  No East Money / Tushare / concepts.
 
@@ -34,7 +35,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from whaletrail.data.baostock_source import INDEX_IDS, BaostockSource
+from whaletrail.data.baostock_source import BENCH_INDEXES, INDEX_IDS, BaostockSource
 from whaletrail.storage.repository import Repository
 
 DB_PATH = ROOT / "results" / "whaletrail.db"
@@ -79,7 +80,7 @@ def _refresh_static(source: BaostockSource, repo: Repository) -> list[dict]:
         industry = source.fetch_industry()
         n = repo.save_industry(industry)
         named = sum(1 for r in industry if r.get("industry"))
-        print(f"ashare_industry: {n} 只（有行业名 {named} · 申万一级，无概念）")
+        print(f"ashare_industry: {n} 只（有行业名 {named} · 证监会分类，无概念）")
     except Exception as exc:
         print(f"ashare_industry 失败（日 K 继续）: {exc}")
 
@@ -92,6 +93,26 @@ def _refresh_static(source: BaostockSource, repo: Repository) -> list[dict]:
             print(f"index {index_id} 失败（日 K 继续）: {exc}")
 
     return basics
+
+
+def _index_bars_to_rows(code: str, name: str, df: pd.DataFrame) -> list[dict]:
+    rows = []
+    for d, r in df.iterrows():
+        rows.append(
+            {
+                "code": code,
+                "name": name,
+                "trade_date": d.strftime("%Y-%m-%d"),
+                "open": _sql_float(r["open"]),
+                "high": _sql_float(r["high"]),
+                "low": _sql_float(r["low"]),
+                "close": _sql_float(r["close"]),
+                "volume": _sql_float(r["volume"]),
+                "amount": _sql_float(r["amount"]),
+                "pct_chg": _sql_float(r["pct_chg"]),
+            }
+        )
+    return rows
 
 
 def _bars_to_rows(code: str, df: pd.DataFrame) -> list[dict]:
@@ -207,6 +228,27 @@ def main() -> None:
                 print(f"  进度 {idx}/{len(codes)} · 写入 bar {total_new} · 补字段 {refill_n}")
 
         print(f"完成：{len(codes)} 只，写入 {total_new} 行（其中补字段 {refill_n} 只）")
+
+        # Benchmark index daily bars → index_kline (same window/incremental rules).
+        idx_total = 0
+        idx_last = {} if fixed else repo.index_last_dates()
+        for code, name in BENCH_INDEXES.items():
+            if fixed:
+                idx_start, idx_end = win_from, win_to
+            else:
+                last = idx_last.get(code)
+                if last:
+                    idx_start = _next_day(datetime.strptime(last, "%Y-%m-%d").date())
+                else:
+                    idx_start = start_floor
+                idx_end = today
+            if idx_start > idx_end:
+                continue
+            df = source.fetch_index_daily(code, idx_start, idx_end)
+            if df.empty:
+                continue
+            idx_total += repo.save_index_bars(_index_bars_to_rows(code, name, df))
+        print(f"index_kline: {idx_total} 行（{len(BENCH_INDEXES)} 条基准指数）")
     finally:
         source.logout()
         repo.close()

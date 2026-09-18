@@ -5,7 +5,7 @@ fills the whole-market historical-bar gap that tvscreener cannot: the
 TradingView scanner serves current snapshots only, so the DTW chart-similarity
 scan needs this source to get a full universe of trailing close series.
 Extra daily fields (turn, tradestatus, ST, PE/PB) and cheap snapshots
-(stock basic, 申万一级, sz50/hs300/zz500) come from the same login.
+(stock basic, 证监会行业分类, sz50/hs300/zz500) come from the same login.
 baostock has no concept/theme boards.
 
 Unlike yfinance (gold/US, Parquet cache), the bulk path here writes to the
@@ -43,6 +43,19 @@ _ADJUST_FLAG = "3"
 
 # Snapshot index-constituent APIs (latest membership, not point-in-time history).
 INDEX_IDS = ("sz50", "hs300", "zz500")
+
+# Benchmark index daily bars → ``index_kline`` (sector-rotation relative strength).
+BENCH_INDEXES = {
+    "sh.000001": "上证指数",
+    "sz.399001": "深证成指",
+    "sz.399006": "创业板指",
+    "sh.000016": "上证50",
+    "sh.000300": "沪深300",
+    "sh.000905": "中证500",
+    "sh.000852": "中证1000",
+    "sz.399303": "国证2000",
+}
+_INDEX_FIELDS = "date,code,open,high,low,close,volume,amount,pctChg"
 _INDEX_QUERY = {
     "sz50": "query_sz50_stocks",
     "hs300": "query_hs300_stocks",
@@ -233,9 +246,11 @@ class BaostockSource(DataSource):
         return rows
 
     def fetch_industry(self) -> list[dict]:
-        """Latest 申万一级 industry map (``query_stock_industry``).
+        """Latest industry map (``query_stock_industry``).
 
-        baostock has no concept/theme boards — only this classification.
+        baostock labels this 申银万国 but returns 证监会行业分类（大类）
+        values (e.g. "C39 计算机、通信和其他电子设备制造业") — the stored
+        table is CSR, not SW.  baostock has no concept/theme boards.
         Weekly refresh on the server (Monday).
         """
         self._ensure_login()
@@ -313,3 +328,36 @@ class BaostockSource(DataSource):
         if df.empty:
             return pd.DataFrame()
         return _to_daily(df)
+
+    def fetch_index_daily(self, code: str, start: date, end: date) -> pd.DataFrame:
+        """Fetch daily bars for one benchmark index (``sh.000300`` ...)."""
+        self._ensure_login()
+        bs = self._import()
+        rs = bs.query_history_k_data_plus(
+            code,
+            _INDEX_FIELDS,
+            start_date=start.strftime("%Y-%m-%d"),
+            end_date=end.strftime("%Y-%m-%d"),
+            frequency="d",
+        )
+        if rs.error_code != "0":
+            raise RuntimeError(
+                f"baostock index {code} failed: {rs.error_code} {rs.error_msg}"
+            )
+        df = _result_frame(rs)
+        if df.empty:
+            return pd.DataFrame()
+        out = pd.DataFrame(
+            {
+                "open": _numeric(df, "open"),
+                "high": _numeric(df, "high"),
+                "low": _numeric(df, "low"),
+                "close": _numeric(df, "close"),
+                "volume": _numeric(df, "volume"),
+                "amount": _numeric(df, "amount"),
+                "pct_chg": _numeric(df, "pctChg"),
+            }
+        )
+        out.index = pd.to_datetime(df["date"].to_numpy())
+        out.index.name = "date"
+        return out.dropna(subset=["open", "high", "low", "close"]).sort_index()

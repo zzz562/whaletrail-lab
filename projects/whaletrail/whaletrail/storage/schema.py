@@ -8,8 +8,9 @@ Tables
 - ``quote_snapshots`` — tvscreener watchlist snapshots.
 - ``daily_kline``   — baostock A-share daily bars (similarity + extras).
 - ``ashare_universe`` — stock basic (ipo/status).
-- ``ashare_industry`` — 申万一级行业.
+- ``ashare_industry`` — 证监会行业分类（大类，非申万）.
 - ``ashare_index_constituents`` — sz50 / hs300 / zz500 membership.
+- ``index_kline``   — benchmark index daily bars (sector-rotation baselines).
 """
 
 from __future__ import annotations
@@ -115,7 +116,7 @@ CREATE TABLE IF NOT EXISTS ashare_universe (
 CREATE TABLE IF NOT EXISTS ashare_industry (
     code            TEXT    PRIMARY KEY,
     name            TEXT,
-    industry        TEXT,              -- 申万一级
+    industry        TEXT,              -- 证监会行业分类（大类）
     classification  TEXT,              -- e.g. 申万一级行业
     update_date     TEXT
 );
@@ -126,6 +127,20 @@ CREATE TABLE IF NOT EXISTS ashare_index_constituents (
     name            TEXT,
     update_date     TEXT,
     PRIMARY KEY (index_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS index_kline (
+    code            TEXT    NOT NULL,  -- baostock index code: sh.000300
+    name            TEXT,
+    trade_date      TEXT    NOT NULL,  -- YYYY-MM-DD
+    open            REAL,
+    high            REAL,
+    low             REAL,
+    close           REAL,
+    volume          REAL,
+    amount          REAL,
+    pct_chg         REAL,
+    PRIMARY KEY (code, trade_date)
 );
 """
 

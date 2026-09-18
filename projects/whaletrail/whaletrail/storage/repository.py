@@ -261,7 +261,7 @@ class Repository:
         return cur.rowcount
 
     def save_industry(self, rows: list[dict]) -> int:
-        """Replace the 申万一级 map with the latest snapshot."""
+        """Replace the 证监会行业分类 map with the latest snapshot."""
         self.conn.execute("DELETE FROM ashare_industry")
         batch = [
             (
@@ -335,6 +335,39 @@ class Repository:
             (index_id,),
         ).fetchall()
         return [r["code"] for r in rows]
+
+    def save_index_bars(self, rows: list[dict]) -> int:
+        """Bulk-upsert benchmark index daily bars into ``index_kline``."""
+        batch = [
+            (
+                r.get("code", ""),
+                r.get("name") or "",
+                r.get("trade_date", ""),
+                r.get("open"),
+                r.get("high"),
+                r.get("low"),
+                r.get("close"),
+                r.get("volume"),
+                r.get("amount"),
+                r.get("pct_chg"),
+            )
+            for r in rows
+        ]
+        cur = self.conn.executemany(
+            """INSERT OR REPLACE INTO index_kline
+               (code, name, trade_date, open, high, low, close, volume, amount, pct_chg)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            batch,
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def index_last_dates(self) -> dict[str, str]:
+        """Return ``{index code: newest trade_date}`` for benchmark indexes."""
+        rows = self.conn.execute(
+            "SELECT code, MAX(trade_date) AS last FROM index_kline GROUP BY code"
+        ).fetchall()
+        return {r["code"]: r["last"] for r in rows if r["last"]}
 
     def daily_last_date(self, code: str) -> Optional[str]:
         """Return the newest ``trade_date`` persisted for *code*, or *None*."""

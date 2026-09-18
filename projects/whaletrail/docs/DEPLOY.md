@@ -87,9 +87,18 @@ openclaw cron run whaletrail-sentiment   # 手动触发情绪扫描
 | `whaletrail-sentiment` | 每日 09:00 CST | X KOL 情绪扫描 → Telegram |
 | `whaletrail-ashare` | 工作日 15:30 CST | A股低频率 paper（`ashare-paper.py`，脚本内自检交易日历+时段）→ Telegram |
 
-## A股 baostock 全市场（相似选股数据）
+## A股 baostock 全市场（相似选股 + 板块轮动数据）
 
 Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，脚本会自动从缺口日重拉。
+
+系统 crontab（mini）每工作日 16:30 / 20:00 两班例行增量抓取（全市场日 K + 静态表 + `index_kline` 基准指数），日志 `logs/fetch-baostock.log`。20:00 班兜底 baostock 当日 EOD 发布晚于 16:30 的情况：
+
+```cron
+30 16 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/fetch-baostock-universe.py >> logs/fetch-baostock.log 2>&1
+0 20 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/fetch-baostock-universe.py >> logs/fetch-baostock.log 2>&1
+```
+
+手动跑同一命令即可补数：
 
 ```bash
 cd ~/Projects/whaletrail-lab/projects/whaletrail
