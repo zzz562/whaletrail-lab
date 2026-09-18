@@ -66,7 +66,7 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | `scripts/sentiment.py` | X 情绪扫描 | Mac mini（cron） | X token、DeepSeek/Ollama、代理 |
 | `scripts/fetch-tvscreener-watchlist.py` | TradingView watchlist 快照 | Mac mini（cron/手动） | 直连 TV，无需代理 |
 | `scripts/ashare-paper.py` | A股低频率 paper（快照积累→日线→信号；交易日历+时段门禁） | Mac mini（cron/手动） | venv、tvscreener、SQLite、直连 SZSE（无需代理） |
-| `scripts/fetch-baostock-universe.py` | A股全市场日 K（OHLCV+turn/ST/PE/PB）+ 申万一级 + 指数成分 | Mac mini（手动；首次加列后会自动重拉缺字段的旧 bar） | venv、baostock、直连（无需代理） |
+| `scripts/fetch-baostock-universe.py` | A股全市场日 K（OHLCV+turn/ST/PE/PB）+ 证监会行业分类 + 指数成分 + 基准指数日 K | Mac mini（cron 工作日 16:30/20:00；手动亦可；首次加列后会自动重拉缺字段的旧 bar） | venv、baostock、直连（无需代理） |
 | `scripts/ashare-similar.py` | 全市场相似选股 CLI（K 召回 + 量/筹重排） | Mac mini（手动） | venv、SQLite `daily_kline` |
 | `scripts/seed-ashare-history.py` | A股日线历史种子 | Mac mini（手动） | venv、tvdatafeed、代理 |
 | `scripts/watchlist-report.py` | watchlist Markdown 报表 | 任意（本地读 SQLite） | venv |

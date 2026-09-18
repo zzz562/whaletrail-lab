@@ -4,7 +4,7 @@
 |------|------|
 | `base.py` | `DataSource` 抽象基类 |
 | `yfinance_source.py` | Yahoo Finance 日线 + Parquet 缓存 |
-| `baostock_source.py` | A股全市场日 K（OHLCV + turn/ST/PE/PB）+ 证券基本资料 + 申万一级 + 指数成分 |
+| `baostock_source.py` | A股全市场日 K（OHLCV + turn/ST/PE/PB）+ 证券基本资料 + 证监会行业分类（83 大类，非申万）+ 指数成分 + 基准指数日 K（`index_kline`，8 条） |
 | `tvscreener_source.py` | TradingView Scanner HTTP 端点（用于 watchlist 快照） |
 | `watchlist.py` | YAML/JSON 关注列表加载 |
 | `cache.py` | Parquet 本地缓存（append/upsert） |
