@@ -91,7 +91,7 @@ Telegram / Cron
 scripts/run-backtest.py  →  JSON results/
 scripts/analyze.py       →  Ollama 一句话中文
 scripts/daily-report.sh  →  串联日报
-scripts/dashboard.py     →  Streamlit :8766（见 docs/DASHBOARD.md）
+scripts/dashboard.py     →  Streamlit 生产 :8766 / 预发 :8768（见 docs/DASHBOARD.md）
 
 whaletrail/
 ├── data/          YFinanceSource + ParquetCache

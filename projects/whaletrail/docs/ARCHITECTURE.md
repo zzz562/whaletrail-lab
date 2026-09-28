@@ -22,7 +22,7 @@ whaletrail/
 ```
 yfinance ─► YFinanceSource ─► ParquetCache(data_cache/) ─► Backtester ─► results/*.json
                                                                │             └► SQLite whaletrail.db
-                                                               ├─ dashboard.py (:8766)
+                                                               ├─ dashboard.py（生产 :8766 / 预发 :8768，同一脚本）
                                                                └─ daily-report.sh ─► analyze.py ─► Telegram
 
 tvscreener ─► TVScreenerSource ─► quote_snapshots ─► build_daily_history ─► ashare-paper.py

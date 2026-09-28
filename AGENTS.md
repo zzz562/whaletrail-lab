@@ -6,7 +6,7 @@
 
 | 机器 | 角色 |
 |------|------|
-| Mac mini | **唯一开发机 / 源码唯一来源**：写代码、diff、docs、git push。同时是运行/部署机：回测、实时扫描、Telegram、cron、launchd、看板 `:8766` |
+| Mac mini | **唯一开发机 / 源码唯一来源**：写代码、diff、docs、git push。同时是运行/部署机：回测、实时扫描、Telegram、cron、launchd、看板生产 `:8766` / 预发 `:8768` |
 | MacBook | **观察者 / 只读**：`git pull` 后人工查看/阅读代码，不开发、不 push、不跑服务 |
 
 开发 = Mac mini 写 + 跑。MacBook 是观察者：只 `git pull` 后人工查看代码，经 SSH 端口转发看 Mac mini 服务（见 `projects/whaletrail/docs/ENVIRONMENT.md`）。
@@ -19,7 +19,8 @@
 | 纯 Python 回测 / 数据抓取（需 venv + 代理） | Mac mini |
 | 实时扫描 / Telegram / sentiment / cron / launchd | Mac mini |
 | Ollama、OpenClaw Gateway | Mac mini |
-| 看板生产实例 | Mac mini `:8766`（MacBook 经隧道访问） |
+| 看板生产实例 | Mac mini `:8766`（公网 `:80`，代码在 `~/Projects/whaletrail-prod`） |
+| 看板预发 | Mac mini `:8768`（公网 `/stage/`，跑 lab 工作区；改代码不重启生产） |
 
 ## Code sync
 

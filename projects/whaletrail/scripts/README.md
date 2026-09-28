@@ -6,7 +6,7 @@
 | `paper-live.py` | 实时多策略扫描 + Telegram 推送 | launchd 守护 (`tick` / `loop`) |
 | `daily-report.sh` | 日报：回测 → 摘要 → stdout | cron / 手动 |
 | `analyze.py` | 回测结果格式化（日报子模块） | 被 daily-report.sh 调用 |
-| `dashboard.py` | Streamlit 看板 `:8766`（暗色终端风） | launchd `ai.whaletrail-dashboard`；设计见 `docs/DASHBOARD.md` |
+| `dashboard.py` | Streamlit 看板（暗色终端风）。`/` 为相似选股；其他页 `?page=` | 生产 launchd `ai.whaletrail-dashboard`（`:8766`）；预发 `ai.whaletrail-dashboard-stage`（`:8768`）。设计见 `docs/DASHBOARD.md` |
 | `sentiment.py` | X/Twitter KOL 情绪扫描 → Ollama 打分 | cron |
 | `fetch-tvscreener-watchlist.py` | TradingView scanner 快照拉取 | cron / 手动 |
 | `fetch-baostock-universe.py` | A股全市场日 K + 申万一级 + 指数成分（baostock，Mac mini 直连） | 手动；加列后首次自动补旧 bar |

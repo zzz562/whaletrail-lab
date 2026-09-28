@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""WhaleTrail Dashboard — read-only five-tab monitor.
+"""WhaleTrail Dashboard — read-only monitor.
 
 Pages: 黄金 paper / A股 paper / 相似选股 / KOL 评测 / 跟庄复盘.
-Deep links: /?page=gold|ashare|similar|kol|genzhuang
+Bare / renders 相似选股. Other pages: /?page=gold|ashare|kol|genzhuang.
+No tab bar — the query string is the only switch.
 """
 from __future__ import annotations
 
-import json, logging, subprocess, sys, time, urllib.request
+import json, logging, os, subprocess, sys, time, urllib.request
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -33,12 +34,14 @@ from whaletrail.similarity import (
 from whaletrail.storage.repository import Repository
 
 st.set_page_config(page_title="WhaleTrail", layout="wide")
-ROOT = Path(__file__).resolve().parent.parent
-RESULTS_DIR = ROOT / "results"
+CODE_ROOT = Path(__file__).resolve().parent.parent
+# Prod worktree has no results/; WT_DATA_ROOT points both processes at the lab data.
+DATA_ROOT = Path(os.environ.get("WT_DATA_ROOT", CODE_ROOT)).expanduser().resolve()
+RESULTS_DIR = DATA_ROOT / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = RESULTS_DIR / "whaletrail.db"
-DATA_CACHE_DIR = ROOT / "data_cache"
-WATCHLIST_PATH = ROOT / "config" / "watchlist.yaml"
+DATA_CACHE_DIR = DATA_ROOT / "data_cache"
+WATCHLIST_PATH = DATA_ROOT / "config" / "watchlist.yaml"
 CN_TZ = ZoneInfo("Asia/Shanghai")
 KOL_ROSTER = [
     "feigeshuogushi", "415254141a", "sd145157", "carla121100",
@@ -956,7 +959,8 @@ def _similar_logger() -> logging.Logger:
         return log
     log.setLevel(logging.INFO)
     log.propagate = False
-    path = ROOT / "logs" / "similar-scan.log"
+    log_name = "similar-scan.stage.log" if os.environ.get("WT_ENV") == "stage" else "similar-scan.log"
+    path = DATA_ROOT / "logs" / log_name
     path.parent.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(path, encoding="utf-8")
     fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
@@ -1372,7 +1376,8 @@ with tb1:
 with tb2:
     if st.button("刷新"):
         st.cache_data.clear(); st.rerun()
-# Deep-link keys (同域 query): /?page=gold|ashare|similar|kol|genzhuang
+# Deep links (same host): /?page=gold|ashare|similar|kol|genzhuang
+# Bare / is 相似选股. No tab bar.
 PAGE_DEFS: list[tuple[str, str, Any]] = [
     ("gold", "黄金 paper", page_gold_paper),
     ("ashare", "A股 paper", page_ashare_paper),
@@ -1380,37 +1385,14 @@ PAGE_DEFS: list[tuple[str, str, Any]] = [
     ("kol", "KOL 评测", page_kol),
     ("genzhuang", "跟庄复盘", page_genzhuang),
 ]
-PAGE_KEYS = [k for k, _, _ in PAGE_DEFS]
-PAGE_LABEL = {k: lab for k, lab, _ in PAGE_DEFS}
 PAGE_FN = {k: fn for k, _, fn in PAGE_DEFS}
 
-def _nav_on_change() -> None:
-    key = st.session_state.get("wt_nav")
-    if key in PAGE_KEYS:
-        st.query_params["page"] = key
+def _page_key() -> str:
+    raw = st.query_params.get("page", "similar")
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else "similar"
+    key = str(raw or "similar").strip().lower()
+    return key if key in PAGE_FN else "similar"
 
-_raw = st.query_params.get("page", "gold")
-if isinstance(_raw, (list, tuple)):
-    _raw = _raw[0] if _raw else "gold"
-_qp = str(_raw or "gold").strip().lower()
-if _qp not in PAGE_KEYS:
-    _qp = "gold"
-
-if "wt_nav_init" not in st.session_state:
-    st.session_state["wt_nav"] = _qp
-    st.session_state["wt_nav_init"] = True
-    st.query_params["page"] = _qp
-
-st.segmented_control(
-    "页面",
-    options=PAGE_KEYS,
-    format_func=lambda k: PAGE_LABEL[k],
-    key="wt_nav",
-    on_change=_nav_on_change,
-    label_visibility="collapsed",
-)
-_nav = st.session_state.get("wt_nav", _qp)
-if _nav not in PAGE_KEYS:
-    _nav = "gold"
-PAGE_FN[_nav]()
+PAGE_FN[_page_key()]()
 _health_strip()

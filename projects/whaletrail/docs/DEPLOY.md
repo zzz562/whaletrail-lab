@@ -50,11 +50,29 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | Label | 用途 |
 |-------|------|
 | `ai.whaletrail-live` | paper trading 实时扫描（仅美股交易时段，周末/节假日自动跳过） |
-| `ai.whaletrail-dashboard` | Streamlit 看板 `:8766`（KeepAlive，重启自愈） |
+| `ai.whaletrail-dashboard` | Streamlit 生产看板 `:8766`（worktree `~/Projects/whaletrail-prod`，不监视文件，KeepAlive） |
+| `ai.whaletrail-dashboard-stage` | Streamlit 预发看板 `:8768`（lab 工作区，公网 `/stage/`） |
 | `ai.openclaw.gateway` | OpenClaw AI Agent 网关 |
 | `homebrew.mxcl.ollama` | 本地 LLM（qwen3:4b） |
 | `com.zeph.reverse-tunnel` | SSH 反向隧道 → VPS |
 | `com.zeph.wifi-watchdog` | Wi-Fi 自检 + 隧道自愈（每 3 分钟） |
+
+## 看板生产 / 预发
+
+生产代码在 `~/Projects/whaletrail-prod`（`git worktree add --detach`，停在某个 SHA，不监视文件）。预发就是 `~/Projects/whaletrail-lab` 里正在改的文件。两边都读 lab 的 `results/`、`data_cache/`、`logs/`：生产靠 plist 里的 `WT_DATA_ROOT`；旧 SHA 的 worktree 上另外有这三项目录的符号链接，避免那一版脚本还不认识 `WT_DATA_ROOT`。
+
+在 lab 里存盘只重载 `:8768`（公网 `/stage/`）。要给公网 `/` 的用户看，在 mini 上：
+
+```bash
+SHA=$(git -C ~/Projects/whaletrail-lab rev-parse HEAD)
+git -C ~/Projects/whaletrail-prod checkout "$SHA"
+git -C ~/Projects/whaletrail-lab branch -f prod "$SHA"
+launchctl kickstart -k gui/$(id -u)/ai.whaletrail-dashboard
+```
+
+`prod` 是书签，指向 `main` 上已经发布的提交。不要在 `prod` 上开发，worktree 保持 detached。
+
+反向隧道（`~/Library/LaunchAgents/com.zeph.reverse-tunnel.plist`，不入库）除了 `2222:localhost:22` 和 `127.0.0.1:8766:localhost:8766`，还有 `127.0.0.1:8768:localhost:8768`。改完这条要重启隧道，`2222` 会闪断。VPS nginx 只在 `/etc/nginx/conf.d/wt-dashboard.conf`：`/` 转生产，`/stage/` 转预发。安全组没有放开 8088，预发不走单独端口。
 
 ## Wi-Fi 看门狗
 

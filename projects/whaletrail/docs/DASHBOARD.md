@@ -1,9 +1,9 @@
 # WhaleTrail Dashboard — 看板设计 / 运维笔记
 
 > 暗色交易终端风（Bloomberg / Fortress 参考）  
-> 更新：2026-09-03
+> 更新：2026-09-28
 
-看板是 **只读监控面**，不是下单台，不写策略。数据来自 `results/` 与 SQLite；缺文件就空状态，不编数字。样式必须保持暗色 + 金色强调，不要退回默认浅色 Streamlit。导航是**主区顶部的 `st.tabs`**，五个 tab；侧栏隐藏（手机也看得到 tab）。
+看板是 **只读监控面**，不是下单台，不写策略。数据来自 `results/` 与 SQLite；缺文件就空状态，不编数字。样式必须保持暗色 + 金色强调，不要退回默认浅色 Streamlit。没有顶栏切换。打开 `/` 是相似选股；其他页靠地址参数。侧栏隐藏。
 
 ---
 
@@ -13,24 +13,24 @@
 |------|------|
 | 代码 | `scripts/dashboard.py` |
 | 主题 | `.streamlit/config.toml`（`base = dark`，`primaryColor = #e6b450`） |
-| 端口 | `:8766`（Mac mini 本机；公网经反向隧道 + VPS nginx 80 暴露） |
-| 入口 | `http://139.224.244.214/`（公网稳定入口，无需转发）；`http://localhost:8766/`（本机转发兜底） |
-| 导航 | 主区 `st.tabs`（非侧栏）。**同一 URL，不按 UA 分端**：手机与桌面同一页面、同一五个 tab，tab 条横向可滚 |
+| 端口 | 生产 `:8766`（公网 nginx `:80` `/`）；预发 `:8768`（公网 nginx `:80` `/stage/`）。两进程都在 Mac mini |
+| 入口 | 生产 `http://139.224.244.214/`；预发 `http://139.224.244.214/stage/`。本机转发兜底 `http://localhost:8766/` |
+| 导航 | 无顶栏。`/` 为相似选股。`?page=gold\|ashare\|similar\|kol\|genzhuang` 打开对应页。不按 UA 分端 |
 | 角色 | 人看的 UI。Telegram / OpenClaw 不在主路径（进程照常跑） |
 
 ---
 
 ## 页面与数据
 
-主区 `st.tabs` 仅这五个名字，顺序固定（不要第六页「运行状态」）：
+五个页，没有第六页「运行状态」。`/` 与不认识的 `page` 都落在相似选股。其余四页只通过地址打开：
 
-**黄金 Paper · A股 Paper · 相似选股 · KOL 评测 · 跟庄复盘**
+`/?page=gold` 黄金 Paper · `/?page=ashare` A股 Paper · `/?page=kol` KOL 评测 · `/?page=genzhuang` 跟庄复盘
 
 | 页 | 读什么 | 空状态 |
 |----|--------|--------|
 | **黄金 Paper** | 黄金账：`results/backtest_*.json` 中 GLD `gold_sma` + `data_cache/GLD.parquet` 的买入持有 + `data_cache/SPY.parquet` 对照；金价对照：`GC=F` 日线，**只读自己的缓存文件**（`data_cache/GC=F.parquet` 或 `GC_F.parquet`）；5m/live：`results/paper_live_state.json`（仅观察）。 | 缺回测 / 缺缓存 / 缺 live 则该节空渲染；GC=F 缓存缺失则对照列为空/null，不拿 GLD 价格冒充。 |
 | **A股 Paper** | 仅 `results/ashare_paper_state.json`（15:30 日频 paper 账：tvscreener 快照 + 深交所官方日历）。**不放「观察 / 接近 / 触发」**，不放黄金矿股。 | 缺 state 则空渲染，不编仓位与成交。 |
-| **相似选股** | SQLite `daily_kline`。圈定的日期**只切模板股**（那段历史就是 demo 波形和筹码）；候选股一律取各自**最近同根数**交易日（尾部=最新交易日），比形状不比日期。K 线召回 → 量筹精排（默认偏筹码）。改条件后要点金色按钮。结果不因改模板搜索而消失。`logs/similar-scan.log` 记每次扫描（含候选锚点日 `cand_end`）。 | 无历史则提示跑 `fetch-baostock-universe.py`。无 turn 则筹码空。 |
+| **相似选股** | SQLite `daily_kline`。圈定的日期**只切模板股**（那段历史就是 demo 波形和筹码）；候选股一律取各自**最近同根数**交易日（尾部=最新交易日），比形状不比日期。K 线召回 → 量筹精排（默认偏筹码）。改条件后要点金色按钮。结果不因改模板搜索而消失。`logs/similar-scan.log` 记生产上的每次扫描（含候选锚点日 `cand_end`）。预发写 `logs/similar-scan.stage.log`。 | 无历史则提示跑 `fetch-baostock-universe.py`。无 turn 则筹码空。 |
 | **KOL 评测** | 冻结 18 个 A 股荐股账号名册 + `results/` 里已存的荐股/事后对照（如 `kol_eval*.json`）。**不是跟庄。** 不调 live X API，不用黄金情绪 JSON 冒充评测。 | 无存储评测 → 空表，不编准确率。 |
 | **跟庄复盘** | 仅现有 A 股 watchlist（含黄金矿股）。标签只允许「观察 / 接近 / 触发」，来自已存结果（若有）。日 K 来自 baostock `daily_kline` 的**已收盘**复权 bar。tvscreener 快照不是已完成日线。 | 无已收盘日 K / 无已存标签 → 空或 null，不编 OHLC、不新建 `yin-right.json`。 |
 
@@ -92,7 +92,7 @@
 - `_page_header` / `_card` / `_card_row` / `_pill` / `_show` / `_alt_dark`
 - `_style_base` + `_num_style` / `_side_style` / `_label_style`
 
-新增一页：在 `PAGES` 里加一项 + 一个 `page_*`。当前 `PAGES` 只应有上面五个名字。
+新增一页：在 `PAGE_DEFS` 里加一项 + 一个 `page_*`。当前只应有上面五个名字。不要加回顶栏按钮。
 
 ---
 
@@ -108,21 +108,25 @@ open http://localhost:8766/
 ```
 
 ```bash
-# Mac mini：看板由 launchd `ai.whaletrail-dashboard` 托管（KeepAlive）
+# Mac mini：生产 launchd `ai.whaletrail-dashboard`（:8766，worktree，不监视文件）
+# 预发 launchd `ai.whaletrail-dashboard-stage`（:8768，跑 lab 工作区）
 launchctl list | grep whaletrail-dashboard
 lsof -iTCP:8766 -sTCP:LISTEN
+lsof -iTCP:8768 -sTCP:LISTEN
 
-# 首次部署（仓库已 pull 后）
+# 首次部署（仓库已 pull 后）。生产 plist 指向 ~/Projects/whaletrail-prod
 cp ~/Projects/whaletrail-lab/projects/whaletrail/scripts/ai.whaletrail-dashboard.plist ~/Library/LaunchAgents/
-kill $(lsof -tiTCP:8766 -sTCP:LISTEN) 2>/dev/null
+cp ~/Projects/whaletrail-lab/projects/whaletrail/scripts/ai.whaletrail-dashboard-stage.plist ~/Library/LaunchAgents/
 launchctl bootout gui/$(id -u)/ai.whaletrail-dashboard 2>/dev/null
+launchctl bootout gui/$(id -u)/ai.whaletrail-dashboard-stage 2>/dev/null
 launchctl load -w ~/Library/LaunchAgents/ai.whaletrail-dashboard.plist
+launchctl load -w ~/Library/LaunchAgents/ai.whaletrail-dashboard-stage.plist
 
-# 主题 / CSS 改完：重启进程（KeepAlive 会拉起来）
-launchctl kickstart -k gui/$(id -u)/ai.whaletrail-dashboard
+# 主题 / CSS 改在预发上看。生产要等发布（见 DEPLOY.md）再 kickstart
+launchctl kickstart -k gui/$(id -u)/ai.whaletrail-dashboard-stage
 ```
 
-`ai.whaletrail-live` 是 paper-live 扫描，**不是**这块 Streamlit。不要改 LaunchAgent plist。
+`ai.whaletrail-live` 是 paper-live 扫描，**不是**这块 Streamlit。不要改那份 plist。
 
 ---
 
@@ -141,7 +145,7 @@ at.run()
 "
 ```
 
-导航是主区 `st.tabs`，AppTest 里用 `at.tabs` 而不是 `at.sidebar.radio`（侧栏已隐藏）。tab 顺序：黄金 Paper → A股 Paper → 相似选股 → KOL 评测 → 跟庄复盘。一次 `at.run()` 会渲染全部 tab 的 body。
+一次 `at.run()` 只渲染当前 `?page=` 的那一页。默认是相似选股。测其他页先设 `at.query_params["page"]`。没有顶栏，不要再用 `at.tabs`。
 
 ---
 
@@ -154,7 +158,7 @@ at.run()
 5. **布尔列不要丢给 `st.dataframe`** — 会变成复选框；先转成 `"今日"` / `"—"`。
 6. **Altair / Vega 图表给明确 `width`+`height`** — 只靠 `width="stretch"` 时，容器宽度算成 0，图会塌成一条空框。
 7. **`st.fragment` 只包面板，不要包整页路由函数** — 否则切 tab 会乱。
-8. **导航用主区 `st.tabs`，不要退回侧栏** — 手机上侧栏默认收起，用户看不到入口。tab 条 `overflow-x:auto` + `flex-wrap:nowrap`，窄屏横滚。
+8. **不要加回顶栏，也不要改回侧栏** — 五个页靠 `?page=`。手机和桌面同一地址。默认页是相似选股。
 9. **改 `.streamlit/config.toml` 必须重启进程**，浏览器 rerun 不够。
 10. **当日日 K 不算完成** — 跟庄复盘不用同一根未收盘阴线，不编左压。
 11. **GC=F 不能读 GLD 的 parquet** — 两个文件各自读；拿错了会把 $3,xxx 金价当成 GLD 净值，重蹈决策 9 的覆车。

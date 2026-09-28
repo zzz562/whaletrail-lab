@@ -14,7 +14,8 @@
 
 | 服务 | 主机 | 端口 | MacBook 访问 |
 |------|------|------|--------------|
-| WhaleTrail 看板 | Mac mini | 8766 | 公网 `http://139.224.244.214/`（VPS nginx → 反向隧道，无需转发）；本机 `http://localhost:8766/`（需转发） |
+| WhaleTrail 看板（生产） | Mac mini | 8766 | 公网 `http://139.224.244.214/`（VPS nginx `:80` → 反向隧道） |
+| WhaleTrail 看板（预发） | Mac mini | 8768 | 公网 `http://139.224.244.214/stage/`（nginx 把 `/stage/` 转到隧道 `8768`）。跑 lab 工作区，改代码不重启生产 |
 | OpenClaw Gateway | Mac mini | 18789 | `http://localhost:18789/health` |
 | Ollama | Mac mini | 11434 | `http://localhost:11434/api/tags` |
 | Clash 代理 | Mac mini | 7890 | 脚本默认 `HTTPS_PROXY` |
@@ -24,11 +25,18 @@
 看板经「Mac mini 反向隧道 + VPS nginx」对外提供，隧道与 nginx 均由常驻进程托管（launchd `com.zeph.reverse-tunnel` / systemd `nginx`），MacBook 无需再起转发。
 
 ```bash
-open http://139.224.244.214/               # 稳定公网 URL
-curl -s http://139.224.244.214/_stcore/health   # 健康检查 → ok
+open http://139.224.244.214/               # 生产
+open http://139.224.244.214/stage/        # 预发
+curl -s http://139.224.244.214/_stcore/health
+curl -s http://139.224.244.214/stage/_stcore/health
 ```
 
-链路：VPS `:80`（nginx，含 websocket 代理）→ VPS `127.0.0.1:8766`（反向隧道 `-R 127.0.0.1:8766:localhost:8766`）→ Mac mini `:8766`（streamlit）。
+链路：VPS nginx（websocket 代理）→ VPS 本机反向隧道 → Mac mini streamlit。阿里云安全组只放了 22 和 80，所以预发挂在 `/stage/`，不另开端口。
+
+| 公网 | VPS nginx | 隧道 | mini |
+|------|-----------|------|------|
+| `:80` `/` | `127.0.0.1:8766` | `-R 127.0.0.1:8766:localhost:8766` | 生产 `:8766`，代码在 `~/Projects/whaletrail-prod` |
+| `:80` `/stage/` | `127.0.0.1:8768/stage/` | `-R 127.0.0.1:8768:localhost:8768` | 预发 `:8768`，`baseUrlPath=stage`，代码在 `~/Projects/whaletrail-lab` |
 
 端口转发（MacBook 上执行）：
 
@@ -70,7 +78,7 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | `scripts/ashare-similar.py` | 全市场相似选股 CLI（K 召回 + 量/筹重排） | Mac mini（手动） | venv、SQLite `daily_kline` |
 | `scripts/seed-ashare-history.py` | A股日线历史种子 | Mac mini（手动） | venv、tvdatafeed、代理 |
 | `scripts/watchlist-report.py` | watchlist Markdown 报表 | 任意（本地读 SQLite） | venv |
-| `scripts/dashboard.py` | Streamlit 看板 | Mac mini（launchd `ai.whaletrail-dashboard`） | venv、各服务健康 |
+| `scripts/dashboard.py` | Streamlit 看板。生产 launchd `ai.whaletrail-dashboard`（worktree，`:8766`）；预发 `ai.whaletrail-dashboard-stage`（lab，`:8768`） | Mac mini | venv、`WT_DATA_ROOT`（生产指向 lab 的 `results/`） |
 
 ## venv（MacBook 本地需要时）
 
