@@ -51,10 +51,10 @@ credentials.json
 Thumbs.db
 ehthumbs.db
 # WhaleTrail local artifacts
-projects/whaletrail/data_cache/
-projects/whaletrail/results/
+projects/whaletrail/data_cache
+projects/whaletrail/results
 projects/whaletrail/.venv/
 
 # Runtime logs
 *.err
-projects/whaletrail/logs/
+projects/whaletrail/logs
