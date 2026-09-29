@@ -21,12 +21,21 @@ Usage:
   python scripts/fetch-baostock-universe.py --from 20240101 --to 20241231
   python scripts/fetch-baostock-universe.py --codes sh.600690,sz.000338
   python scripts/fetch-baostock-universe.py --skip-refill       # new days only
+  python scripts/fetch-baostock-universe.py --no-alert          # no Telegram push
+
+Every query is bounded by ``--query-timeout`` seconds — baostock's socket reader
+loops on ``recv`` forever once the server half-closes the connection — and the
+whole run by ``--max-minutes``.  Failures are counted and pushed to Telegram
+unless ``--no-alert``; a lock file keeps two cron runs from overlapping.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
+import signal
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -36,10 +45,79 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from whaletrail.data.baostock_source import BENCH_INDEXES, INDEX_IDS, BaostockSource
+from whaletrail.reporting.telegram import send as tg_send
 from whaletrail.storage.repository import Repository
 
 DB_PATH = ROOT / "results" / "whaletrail.db"
+LOCK_PATH = ROOT / "results" / ".fetch-baostock.lock"
 DEFAULT_START = date(2015, 1, 1)  # matches ValarmClub's default history floor
+
+
+class QueryTimeout(Exception):
+    """A single baostock query exceeded its time budget."""
+
+
+def _alarm(signum, frame) -> None:  # noqa: ARG001 - signal handler signature
+    raise QueryTimeout("single query exceeded the time budget")
+
+
+def _stamp(msg: str) -> None:
+    """Print *msg* with a timestamp; the cron log carries none of its own."""
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
+def _acquire_lock(path: Path):
+    """Take an exclusive non-blocking lock; ``None`` when another run holds it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def _alert(
+    *,
+    stock_failures: list[str],
+    index_failures: list[str],
+    total_new: int,
+    newest: str | None,
+    elapsed: float,
+    truncated: bool,
+    args,
+) -> None:
+    """Push a Telegram alert when the run looks unhealthy."""
+    if args.no_alert:
+        return
+    problems: list[str] = []
+    if truncated:
+        problems.append(f"超过 {args.max_minutes:g} 分钟预算被截断，剩余标的未抓")
+    if len(stock_failures) > args.fail_threshold:
+        problems.append(
+            f"单只抓取失败 {len(stock_failures)} 只（阈值 {args.fail_threshold}）"
+        )
+    if index_failures:
+        problems.append(
+            f"基准指数失败 {len(index_failures)} 条：" + "、".join(index_failures[:5])
+        )
+    if not problems:
+        return
+
+    lines = [
+        f"⚠️ A股 baostock 抓取异常（{datetime.now().strftime('%Y-%m-%d %H:%M')}）",
+        *[f"• {p}" for p in problems],
+        f"写入 {total_new} 行 · 最新日期 {newest or '-'} · 耗时 {elapsed / 60:.1f} 分钟",
+    ]
+    if stock_failures:
+        lines.append("失败样例：" + "、".join(stock_failures[:5]))
+    lines.append("排查：tail -50 logs/fetch-baostock.log")
+
+    if tg_send("\n".join(lines), quiet=True):
+        _stamp("已推送 Telegram 告警")
+    else:
+        _stamp("⚠️ Telegram 告警发送失败")
 
 
 def _next_day(d: date) -> date:
@@ -151,10 +229,27 @@ def main() -> None:
         action="store_true",
         help="Do not re-fetch bars that are missing extra fields",
     )
+    parser.add_argument(
+        "--query-timeout", type=int, default=90, help="单次 baostock 查询上限秒数（默认 90）"
+    )
+    parser.add_argument(
+        "--max-minutes", type=float, default=90.0, help="整轮抓取时间预算（分钟，默认 90）"
+    )
+    parser.add_argument(
+        "--fail-threshold", type=int, default=300, help="单只失败超过该值时告警（默认 300）"
+    )
+    parser.add_argument("--no-alert", action="store_true", help="不推送 Telegram 告警")
+    parser.add_argument("--no-lock", action="store_true", help="不检查并发锁")
     args = parser.parse_args()
 
     if (args.date_from is None) ^ (args.date_to is None):
         parser.error("--from and --to must be used together")
+
+    signal.signal(signal.SIGALRM, _alarm)
+    lock = None if args.no_lock else _acquire_lock(LOCK_PATH)
+    if lock is None and not args.no_lock:
+        _stamp("另一轮抓取仍在运行（锁被占用），本轮跳过")
+        return
 
     repo = Repository(args.db)
     source = BaostockSource()
@@ -167,7 +262,10 @@ def main() -> None:
             parser.error("--to must be >= --from")
         print(f"固定窗模式（不复权 upsert）：{win_from.isoformat()} → {win_to.isoformat()}")
 
+    started = time.monotonic()
+    deadline = started + args.max_minutes * 60
     try:
+        _stamp(f"抓取开始（预算 {args.max_minutes:g} 分钟，单次查询上限 {args.query_timeout}s）")
         source.login()
 
         if args.codes:
@@ -201,6 +299,9 @@ def main() -> None:
 
         total_new = 0
         refill_n = 0
+        failures: list[str] = []
+        newest: str | None = None
+        truncated = False
         for idx, (code, _name) in enumerate(codes, start=1):
             if fixed:
                 start, end = win_from, win_to
@@ -218,19 +319,44 @@ def main() -> None:
                 if start > end:
                     continue
 
-            df = source.fetch_daily(code, start, end)
+            try:
+                signal.setitimer(signal.ITIMER_REAL, args.query_timeout)
+                df = source.fetch_daily(code, start, end)
+            except Exception as exc:  # 网络错误 / 查询超时：记下这一只，继续其余
+                failures.append(f"{code}: {exc}")
+                continue
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+
             if df.empty:
                 continue
 
+            last_bar = df.index[-1].strftime("%Y-%m-%d")
+            if newest is None or last_bar > newest:
+                newest = last_bar
             total_new += repo.save_daily_bars(_bars_to_rows(code, df))
 
             if idx % 200 == 0:
-                print(f"  进度 {idx}/{len(codes)} · 写入 bar {total_new} · 补字段 {refill_n}")
+                print(
+                    f"  进度 {idx}/{len(codes)} · 写入 bar {total_new} · 补字段 {refill_n}"
+                    f" · 失败 {len(failures) + len(source.failures)}"
+                )
 
-        print(f"完成：{len(codes)} 只，写入 {total_new} 行（其中补字段 {refill_n} 只）")
+            if time.monotonic() > deadline:
+                truncated = True
+                _stamp(
+                    f"超出 {args.max_minutes:g} 分钟预算，提前结束（已处理 {idx}/{len(codes)}）"
+                )
+                break
+
+        _stamp(
+            f"完成：{len(codes)} 只，写入 {total_new} 行（其中补字段 {refill_n} 只）· "
+            f"单只失败 {len(failures) + len(source.failures)} 只 · 最新 {newest or '-'}"
+        )
 
         # Benchmark index daily bars → index_kline (same window/incremental rules).
         idx_total = 0
+        idx_failures: list[str] = []
         idx_last = {} if fixed else repo.index_last_dates()
         for code, name in BENCH_INDEXES.items():
             if fixed:
@@ -244,11 +370,46 @@ def main() -> None:
                 idx_end = today
             if idx_start > idx_end:
                 continue
-            df = source.fetch_index_daily(code, idx_start, idx_end)
+            try:
+                signal.setitimer(signal.ITIMER_REAL, args.query_timeout)
+                df = source.fetch_index_daily(code, idx_start, idx_end)
+            except Exception as exc:  # 单条指数失败不再中断整轮
+                idx_failures.append(f"{code}: {exc}")
+                continue
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+
             if df.empty:
                 continue
             idx_total += repo.save_index_bars(_index_bars_to_rows(code, name, df))
-        print(f"index_kline: {idx_total} 行（{len(BENCH_INDEXES)} 条基准指数）")
+        _stamp(
+            f"index_kline: {idx_total} 行（{len(BENCH_INDEXES)} 条基准指数）· "
+            f"失败 {len(idx_failures)} 条"
+        )
+
+        elapsed = time.monotonic() - started
+        _stamp(f"抓取结束，耗时 {elapsed / 60:.1f} 分钟")
+        _alert(
+            stock_failures=[
+                *failures,
+                *(f"{f['code']} ({f['error_msg']})" for f in source.failures),
+            ],
+            index_failures=idx_failures,
+            total_new=total_new,
+            newest=newest,
+            elapsed=elapsed,
+            truncated=truncated,
+            args=args,
+        )
+    except Exception as exc:  # 硬失败（登录/静态表/写库）也要告警，别只留一条 traceback
+        if not args.no_alert:
+            tg_send(
+                f"⚠️ A股 baostock 抓取中断（{datetime.now().strftime('%Y-%m-%d %H:%M')}）\n"
+                f"{type(exc).__name__}: {exc}\n"
+                f"排查：tail -50 logs/fetch-baostock.log",
+                quiet=True,
+            )
+        raise
     finally:
         source.logout()
         repo.close()

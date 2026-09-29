@@ -57,8 +57,8 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 
 | 凭证 | 变量 | 存放位置 |
 |------|------|----------|
-| Telegram Bot | `TG_BOT_TOKEN` | Mac mini 环境（launchd） |
-| Telegram Chat | `TG_CHAT_ID` | `paper-live.py` 默认 `5102138680` |
+| Telegram Bot | `TG_BOT_TOKEN` | `~/.config/whaletrail/telegram.env`（600，cron 告警读它）；副本在 `~/Library/LaunchAgents/ai.whaletrail-live.plist` |
+| Telegram Chat | `TG_CHAT_ID` | 同上，默认 `5102138680` |
 | X/Twitter | `TWITTER_BEARER_TOKEN` | `sentiment.py` 内置默认值 |
 | DeepSeek | `DEEPSEEK_API_KEY` | 环境变量，或 `~/.openclaw/service-env/ai.openclaw.gateway.env` |
 | Ollama | 无密钥 | 本地 `http://127.0.0.1:11434`，模型 `qwen3:4b` |
@@ -70,11 +70,12 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | `scripts/run-backtest.py` | 回测 | Mac mini（主）；MacBook 需 venv+代理 | yfinance、venv、代理 |
 | `scripts/analyze.py` | 回测结果格式化 | 任意（本地读 results） | venv |
 | `scripts/daily-report.sh` | 日报串联 | Mac mini（cron） | venv、代理 |
-| `scripts/paper-live.py` | 实时扫描 + Telegram（非交易时段自动跳过） | Mac mini（launchd） | yfinance、`TG_BOT_TOKEN`、代理 |
+| `scripts/paper-live.py` | 实时扫描（非交易时段自动跳过）；Telegram 推送已停用（`WT_TG_PUSH=0`），仍写 `results/paper_live_state.json` 供看板黄金 paper 页 | Mac mini（launchd） | yfinance、代理 |
 | `scripts/sentiment.py` | X 情绪扫描 | Mac mini（cron） | X token、DeepSeek/Ollama、代理 |
 | `scripts/fetch-tvscreener-watchlist.py` | TradingView watchlist 快照 | Mac mini（cron/手动） | 直连 TV，无需代理 |
 | `scripts/ashare-paper.py` | A股低频率 paper（快照积累→日线→信号；交易日历+时段门禁） | Mac mini（cron/手动） | venv、tvscreener、SQLite、直连 SZSE（无需代理） |
-| `scripts/fetch-baostock-universe.py` | A股全市场日 K（OHLCV+turn/ST/PE/PB）+ 证监会行业分类 + 指数成分 + 基准指数日 K | Mac mini（cron 工作日 16:30/20:00；手动亦可；首次加列后会自动重拉缺字段的旧 bar） | venv、baostock、直连（无需代理） |
+| `scripts/fetch-baostock-universe.py` | A股全市场日 K（OHLCV+turn/ST/PE/PB）+ 证监会行业分类 + 指数成分 + 基准指数日 K；单查询超时 + 整轮预算 + 并发锁 + 失败 Telegram 告警 | Mac mini（cron 工作日 16:30/20:00；手动亦可；首次加列后会自动重拉缺字段的旧 bar） | venv、baostock、直连（无需代理） |
+| `scripts/check-ashare-data.py` | A股数据完整性体检（最近 3 个交易日的日线覆盖率 + 基准指数），不达标推送 Telegram | Mac mini（cron 工作日 21:45） | venv、SQLite、SZSE 日历、`TG_BOT_TOKEN` |
 | `scripts/ashare-similar.py` | 全市场相似选股 CLI（K 召回 + 量/筹重排） | Mac mini（手动） | venv、SQLite `daily_kline` |
 | `scripts/seed-ashare-history.py` | A股日线历史种子 | Mac mini（手动） | venv、tvdatafeed、代理 |
 | `scripts/watchlist-report.py` | watchlist Markdown 报表 | 任意（本地读 SQLite） | venv |

@@ -58,6 +58,10 @@ SCAN_JOBS = [
 STATE_FILE = ROOT / "results" / "paper_live_state.json"
 TG_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "5102138680")
+# Telegram pushes retired 2026-09-29: the GLD/SPY observation signals were not
+# acted on.  The scan itself keeps running because results/paper_live_state.json
+# feeds the dashboard's gold paper page.  Re-enable with WT_TG_PUSH=1.
+PUSH_ENABLED = os.environ.get("WT_TG_PUSH", "1").strip().lower() not in {"0", "false", "no"}
 # Proxy config: WT_PROXY_URL → HTTPS_PROXY → default. See docs/ENVIRONMENT.md.
 PROXY = os.environ.get("WT_PROXY_URL") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7890"
 
@@ -175,6 +179,10 @@ def save_state(state: dict) -> None:
 
 
 def send_telegram(text: str) -> bool:
+    if not PUSH_ENABLED:
+        # Report success so signal dedup and paper bookkeeping stay unchanged.
+        print(f"  · push disabled (WT_TG_PUSH=0)：{text.splitlines()[0][:70]}")
+        return True
     if not TG_TOKEN:
         print("  ⚠️ TG_BOT_TOKEN not set")
         return False

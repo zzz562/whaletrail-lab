@@ -49,7 +49,7 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 
 | Label | 用途 |
 |-------|------|
-| `ai.whaletrail-live` | paper trading 实时扫描（仅美股交易时段，周末/节假日自动跳过） |
+| `ai.whaletrail-live` | paper trading 实时扫描（仅美股交易时段，周末/节假日自动跳过）· Telegram 推送已停用（`WT_TG_PUSH=0`，2026-09-29）；扫描仍写 `results/paper_live_state.json` 供看板黄金 paper 页 |
 | `ai.whaletrail-dashboard` | Streamlit 生产看板 `:8766`（worktree `~/Projects/whaletrail-prod`，不监视文件，KeepAlive） |
 | `ai.whaletrail-dashboard-stage` | Streamlit 预发看板 `:8768`（lab 工作区，公网 `/stage/`） |
 | `ai.openclaw.gateway` | OpenClaw AI Agent 网关 |
@@ -94,33 +94,44 @@ tail -5 ~/Projects/whaletrail-lab/projects/whaletrail/logs/wifi-watchdog.log
 ## Cron（OpenClaw）
 
 ```bash
-openclaw cron list
-openclaw cron run whaletrail-daily       # 手动触发日报
-openclaw cron run whaletrail-sentiment   # 手动触发情绪扫描
+openclaw cron list                       # CLI 需 gateway 的 node（~/.nvm/.../v24.19.0/bin/node）；系统 node 22 会拒跑
+openclaw cron run whaletrail-ashare      # 手动触发 A 股 paper
 ```
 
 | 任务 | 调度 | 说明 |
 |------|------|------|
-| `whaletrail-daily` | 工作日 08:30 CST | `daily-report.sh gold_sma GLD` → Telegram |
-| `whaletrail-sentiment` | 每日 09:00 CST | X KOL 情绪扫描 → Telegram |
 | `whaletrail-ashare` | 工作日 15:30 CST | A股低频率 paper（`ashare-paper.py`，脚本内自检交易日历+时段）→ Telegram |
+
+2026-09-29 核查：`whaletrail-daily`（08:30 日报）与 `whaletrail-sentiment`（09:00 情绪）已不在 cron 列表里；日报改手动 `scripts/daily-report.sh gold_sma GLD`。同日晚间起，`ai.whaletrail-live` 的 GLD/SPY paper 推送停用（`WT_TG_PUSH=0`），扫描本身继续跑。
 
 ## A股 baostock 全市场（相似选股 + 板块轮动数据）
 
 Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，脚本会自动从缺口日重拉。
 
-系统 crontab（mini）每工作日 16:30 / 20:00 两班例行增量抓取（全市场日 K + 静态表 + `index_kline` 基准指数），日志 `logs/fetch-baostock.log`。20:00 班兜底 baostock 当日 EOD 发布晚于 16:30 的情况：
+系统 crontab（mini）每工作日 16:30 / 20:00 两班例行增量抓取（全市场日 K + 静态表 + `index_kline` 基准指数），日志 `logs/fetch-baostock.log`；21:45 再跑一次完整性体检。20:00 班兜底 baostock 当日 EOD 发布晚于 16:30 的情况：
 
 ```cron
 30 16 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/fetch-baostock-universe.py >> logs/fetch-baostock.log 2>&1
 0 20 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/fetch-baostock-universe.py >> logs/fetch-baostock.log 2>&1
+45 21 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/check-ashare-data.py >> logs/check-ashare-data.log 2>&1
 ```
 
-手动跑同一命令即可补数：
+抓取脚本的三道防线（2026-09-29 加，起因是 9-23 那班撞上 baostock 半关连接后空转 6 天）：
+
+- `--query-timeout`（默认 90s）：单只查询用 SIGALRM 截断。baostock 的 socket 读循环在服务端半关连接后 `while True: recv(8192)` 永不返回（`baostock/util/socketutil.py`），只靠 socket timeout 治不了。
+- `--max-minutes`（默认 90）：整轮超预算即停抓并告警，不会拖到下一班。
+- 失败计数 + Telegram 告警：单只失败超过 `--fail-threshold`（默认 300）或基准指数有失败就推送；`--no-alert` 关闭。
+- 并发锁 `results/.fetch-baostock.lock`：上一班没跑完时下一班直接跳过（`--no-lock` 关闭）。
+
+告警经 `whaletrail/reporting/telegram.py` 发送：token 取 `TG_BOT_TOKEN`/`TG_CHAT_ID`，缺省读 `~/.config/whaletrail/telegram.env`（600，git 之外），依次尝试环境代理 → 直连 → `127.0.0.1:7890`。体检口径：最近 3 个交易日（深交所日历）在 `daily_kline` 覆盖 ≥95% 上市名单、`index_kline` 8 条基准齐全，不达标推送并 exit 1。
+
+手动补数/体检：
 
 ```bash
 cd ~/Projects/whaletrail-lab/projects/whaletrail
-.venv/bin/python scripts/fetch-baostock-universe.py
+.venv/bin/python scripts/fetch-baostock-universe.py --no-alert        # 手动补数不推送
+.venv/bin/python scripts/fetch-baostock-universe.py --from 20180101 --to 20181231 --codes "$(cat /tmp/codes2018.txt)" --no-alert
+.venv/bin/python scripts/check-ashare-data.py --no-alert              # 只体检
 ```
 
 ## 日志

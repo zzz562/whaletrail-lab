@@ -29,7 +29,8 @@ tvscreener ─► TVScreenerSource ─► quote_snapshots ─► build_daily_his
                                           └────────► watchlist_report.md
 
 baostock  ─► BaostockSource ─► daily_kline / index_kline / ashare_universe / ashare_industry / ashare_index_constituents
-                                          └────────► dashboard 相似选股（daily_bars → retrieve_rank：K 召回，量/筹重排）
+                                          ├────────► dashboard 相似选股（daily_bars → retrieve_rank：K 召回，量/筹重排）
+                                          └────────► check-ashare-data.py（21:45 完整性体检）/ 抓取失败 ─► Telegram 告警
 ```
 
 ## 数据层组合
@@ -41,7 +42,7 @@ baostock  ─► BaostockSource ─► daily_kline / index_kline / ashare_univer
 | 历史日线（回测） | yfinance + Parquet 缓存 | tvscreener 不提供历史；缓存做覆盖检查 + 头尾补缺口，减少 yfinance 配额 |
 | intraday 历史（5m/10m/1h 回测） | yfinance + Parquet 累积 | `data/intraday.py`；yfinance 5m 上限 60 天，缓存 key `<symbol>_<interval>` 跨窗口累积；10m 由 5m 重采样 |
 | 实时快照 / watchlist / A股 paper | tvscreener | `get_quotes`；快照积累进 `quote_snapshots`，经 `build_daily_history` 生成日线 |
-| A股全市场日 K / 相似选股 / 行业 / 基准指数 | baostock | `daily_kline`（不复权 OHLCV + turn/ST/PE/PB）；`ashare_universe`；证监会行业分类（83 大类，非申万）；sz50/hs300/zz500；`index_kline` 8 条基准指数日 K。无概念板块。Mac mini 直连，工作日 16:30/20:00 cron 例行 |
+| A股全市场日 K / 相似选股 / 行业 / 基准指数 | baostock | `daily_kline`（不复权 OHLCV + turn/ST/PE/PB）；`ashare_universe`；证监会行业分类（83 大类，非申万）；sz50/hs300/zz500；`index_kline` 8 条基准指数日 K。无概念板块。Mac mini 直连，工作日 16:30/20:00 cron 例行；单只失败记入 `BaostockSource.failures`，异常与不完整数据走 Telegram 告警（`whaletrail/reporting/telegram.py`） |
 | paper-live 5m 信号 | yfinance | 实时扫描仍走 yfinance（`intraday.fetch_bars`，不写缓存） |
 
 入口：`whaletrail/data/layer.py` 的 `DataLayer`。快照源的 yfinance fallback 是待办（需 tv/yahoo 符号映射）。

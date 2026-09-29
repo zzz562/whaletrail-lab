@@ -162,6 +162,8 @@ class BaostockSource(DataSource):
     def __init__(self) -> None:
         self._bs = None
         self._logged_in = False
+        # Queries that failed since construction, for callers that alert on them.
+        self.failures: list[dict] = []
 
     def _import(self):
         if self._bs is None:
@@ -187,6 +189,17 @@ class BaostockSource(DataSource):
         if self._logged_in:
             self._bs.logout()
             self._logged_in = False
+
+    def _record_failure(self, kind: str, code: str, rs) -> None:
+        """Remember a failed query so the caller can count and alert on it."""
+        self.failures.append(
+            {
+                "kind": kind,
+                "code": code,
+                "error_code": rs.error_code,
+                "error_msg": rs.error_msg,
+            }
+        )
 
     # ------------------------------------------------------------------
     #  DataSource contract
@@ -322,6 +335,7 @@ class BaostockSource(DataSource):
             adjustflag=_ADJUST_FLAG,
         )
         if rs.error_code != "0":
+            self._record_failure("stock", code, rs)
             logger.warning("baostock %s failed: %s %s", code, rs.error_code, rs.error_msg)
             return pd.DataFrame()
         df = _result_frame(rs)
@@ -341,6 +355,7 @@ class BaostockSource(DataSource):
             frequency="d",
         )
         if rs.error_code != "0":
+            self._record_failure("index", code, rs)
             raise RuntimeError(
                 f"baostock index {code} failed: {rs.error_code} {rs.error_msg}"
             )
