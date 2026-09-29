@@ -1,6 +1,6 @@
 # WhaleTrail Scope — 基建定界
 
-> 更新：2026-09-28
+> 更新：2026-09-29
 
 ## 一句话
 
@@ -74,6 +74,7 @@ yfinance ──► ParquetCache ──► Backtester ──► results/*.json
 
 25. 板块轮动数据底座（2026-09-18）：补基准指数日 K——新表 `index_kline` 存 8 条基准（上证指数/深证成指/创业板指/上证50/沪深300/中证500/中证1000/国证2000）日线（baostock 无科创50/中证全指，实测返回空），随 `scripts/fetch-baostock-universe.py` 一并增量；同时新增系统 crontab 工作日 16:30/20:00 两班例行抓取（此前 baostock 拉数全靠手动）。行业口径订正：`ashare_industry` 实为**证监会行业分类**（83 大类，baostock `query_stock_industry` 返回值），非此前注释所称申万一级；相关注释/文案同步修正。仅数据补数，不新产品。
 26. 看板默认相似选股，预发与生产分进程（2026-09-28）：公网 `/` 打开相似选股，顶栏分段按钮去掉。`?page=gold|ashare|similar|kol|genzhuang` 仍在同一地址打开对应页，页内没有去其他页的入口。生产跑 `~/Projects/whaletrail-prod`（同一仓库的 worktree，停在已发布 SHA，`server.fileWatcherType=none`，`:8766`，nginx `:80`）。预发跑 `~/Projects/whaletrail-lab`（`:8768`，`baseUrlPath=stage`，公网 `/stage/`）。两进程读 lab 的 `results/` 与 `whaletrail.db`（`WT_DATA_ROOT`）。预发扫描日志 `logs/similar-scan.stage.log`。Git 仍只有 `main`；`prod` 只是指向已发布提交的书签，不在上面开发。代码：`scripts/dashboard.py`、`scripts/ai.whaletrail-dashboard.plist`、`scripts/ai.whaletrail-dashboard-stage.plist`。
+27. 相似选股预发改为特征距离（2026-09-29）：召回仍是收盘 DTW，默认池 500。池内不再用整段换手 L1 + 筹码 EMD 分位，改为到模板的分组距离：筹码（末日 / 该股自己的 A 峰日 / 谷日的峰数、离散、偏度、收盘下方面积）、做盘痕迹（跌幅、速度、连阴、修复）、量（相对此前放量峰、20 日均量、换手）、箱体（宽度、Choppiness、效率比、箱内位置）、末端确认（日收益、收盘在当日高低的位置）、均线（相对 MA7/30/55/120；四条均线都在价格上方是组内的一个数，不是剔除条件）。缺一项就跳过该项，不做硬与。A 峰只说明这只股票此前有过急跌痕迹，不跟模板对齐日历。三档权重偏筹码 / 均衡 / 偏确认是起点，不是标定。旧 `retrieve_rank` 与 `scripts/ashare-similar.py` 保留。新入口 `screen_similar`（`whaletrail/screen.py`）和 `scripts/similar-screen.py`。册子 `docs/SIMILAR_DEMOS.md`。最新交易日若只到了全市场的八成以下，进打分前丢掉。仍是观察，不扩两本账，不拉概念板块，这一版只上预发。
 
 ## 决策记录规范
 

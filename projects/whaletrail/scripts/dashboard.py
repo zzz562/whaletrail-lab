@@ -23,13 +23,18 @@ from whaletrail.data.history import build_daily_history
 from whaletrail.data.watchlist import load_watchlist
 from whaletrail.metrics.performance import calculate_metrics, compute_trade_pnl
 from whaletrail.chips import chip_histogram
+from whaletrail.screen import (
+    DEFAULT_SCREEN_RECALL,
+    DEMOS,
+    WEIGHT_PRESETS,
+    describe_window,
+    format_stage,
+    screen_similar,
+    trim_partial_session,
+)
 from whaletrail.similarity import (
-    DEFAULT_RANK_WEIGHTS,
-    DEFAULT_RECALL_N,
-    RANK_PRESETS,
     build_scan_pool,
     normalize,
-    retrieve_rank,
 )
 from whaletrail.storage.repository import Repository
 
@@ -769,8 +774,11 @@ def page_ashare_paper() -> None:
 def _similarity_universe(
     start: str | None = None,
     end: str | None = None,
-) -> tuple[dict[str, dict[str, list]], dict[str, str], str]:
-    """Aligned daily bars for fused scan. Prefer baostock; never invent OHLC."""
+) -> tuple[dict[str, dict[str, list]], dict[str, str], str, str | None]:
+    """Aligned daily bars for the screen. Prefer baostock; never invent OHLC.
+
+    The fourth value is a dropped partial session date, or None.
+    """
     try:
         repo = Repository(DB_PATH)
         if start is None and end is None:
@@ -779,6 +787,7 @@ def _similarity_universe(
         names = repo.universe_names()
         repo.close()
         if bars:
+            bars, dropped = trim_partial_session(bars)
             try:
                 for item in load_watchlist(WATCHLIST_PATH):
                     if item.market == "china":
@@ -786,11 +795,11 @@ def _similarity_universe(
             except Exception:
                 pass
             rng = f"{start or '?'}→{end or '最新'}"
-            return bars, names, f"全市场 {len(bars)} 只 · baostock daily_kline · {rng}"
+            return bars, names, f"全市场 {len(bars)} 只 · baostock daily_kline · {rng}", dropped
     except Exception:
         pass
     if start is not None or end is not None:
-        return {}, {}, "无 baostock daily_kline · 固定窗不可用（不拿 tvscreener 冒充日 K）"
+        return {}, {}, "无 baostock daily_kline · 固定窗不可用（不拿 tvscreener 冒充日 K）", None
     try:
         items = [i for i in load_watchlist(WATCHLIST_PATH) if i.market == "china"]
     except Exception:
@@ -809,7 +818,7 @@ def _similarity_universe(
             "volume": [float(x) for x in hist["volume"].tolist()],
         }
         names[item.tv_symbol] = item.name
-    return bars, names, f"A股 watchlist {len(bars)} 只 · tvscreener 快照积累（仅 trailing，无换手/筹码）"
+    return bars, names, f"A股 watchlist {len(bars)} 只 · tvscreener 快照积累（仅 trailing，无换手/筹码）", None
 
 _PAIR_SCALE = alt.Scale(range=["#e6b450", "#38bdf8"])
 _CHART_W = 980
@@ -947,12 +956,6 @@ def _overlay_pair(
     ).properties(height=200, width=_CHART_W, title=title)
     st.altair_chart(_alt_dark(line), width="stretch")
 
-def _fmt_dist(v) -> float | None:
-    if v is None or v != v or v == float("inf"):
-        return None
-    return round(float(v), 4)
-
-
 def _similar_logger() -> logging.Logger:
     log = logging.getLogger("whaletrail.similar")
     if log.handlers:
@@ -997,46 +1000,67 @@ def _chip_of(bars: dict, slice_n: int):
     return hist if float(sum(hist)) > 0 else None
 
 
+def _feat_cell(feat: dict, key: str, digits: int = 2, scale: float = 1.0):
+    val = feat.get(key)
+    if val is None:
+        return None
+    return round(float(val) * scale, digits)
+
+
 def page_similar() -> None:
-    _page_header("相似选股", "模板历史窗 × 候选最近窗 · K 线召回 · 换手+筹码重排 · 观察工具")
-    _note("圈定的日期只切模板（demo 波形和数据）。候选股一律取各自最近同样根数的交易日跟模板比形状，不看日期对齐。形态近不等于可交易。")
+    _page_header("相似选股", "模板历史窗 × 候选最近窗 · K 线召回 · 筹码/量/箱体打分 · 观察工具")
+    _note("圈定的日期只切模板（demo 波形和数据）。候选股一律取各自最近同样根数的交易日跟模板比形状，不看日期对齐。缺一项读数就跳过该项，不做硬过滤。形态近不等于可交易。")
 
     preset = st.radio(
-        "精排偏好",
-        tuple(RANK_PRESETS.keys()),
-        index=list(RANK_PRESETS.keys()).index("偏筹码"),
+        "打分偏好",
+        tuple(WEIGHT_PRESETS.keys()),
+        index=list(WEIGHT_PRESETS.keys()).index("偏筹码"),
         horizontal=True,
-        key="similar_preset",
-        help="偏筹码用远东股份×斯迪克标定：换手弱、筹码像的票往前排。",
+        key="similar_screen_preset",
+        help="偏筹码：筹码分布占一半。均衡：六组都有份。偏确认：末端放量和阳线位置更重。这三档是起点，不是标定结果。",
     )
-    d1, d2, r1c2, r1c3, r1c4, r1c5 = st.columns([1.15, 1.15, 0.9, 0.8, 1.3, 0.7])
+    book = st.selectbox(
+        "测试 demo",
+        ("自选", "远东股份", "超声电子"),
+        key="similar_book_demo",
+        help="选中后填上册子里的模板代码和窗口。候选仍是各自最新一段。",
+    )
     default_end = date.today()
     default_start = default_end - pd.Timedelta(days=126).to_pytimedelta()
+    if "similar_scan_start" not in st.session_state:
+        st.session_state["similar_scan_start"] = default_start
+    if "similar_scan_end" not in st.session_state:
+        st.session_state["similar_scan_end"] = default_end
+    demo_key = {"远东股份": "yuandong", "超声电子": "chaosheng"}.get(book)
+    if demo_key and st.session_state.get("_similar_book_applied") != demo_key:
+        spec = DEMOS[demo_key]
+        st.session_state["similar_scan_start"] = date.fromisoformat(spec["start"])
+        st.session_state["similar_scan_end"] = date.fromisoformat(spec["end"])
+        st.session_state["similar_ref_q"] = spec["symbol"].split(".")[-1]
+        st.session_state["_similar_book_applied"] = demo_key
+    elif book == "自选":
+        st.session_state["_similar_book_applied"] = None
+    d1, d2, r1c2, r1c3, r1c5 = st.columns([1.15, 1.15, 0.9, 0.8, 0.7])
     with d1:
-        mark_start = st.date_input("模板窗口起点", value=default_start, key="similar_scan_start")
+        mark_start = st.date_input("模板窗口起点", key="similar_scan_start")
     with d2:
-        mark_end = st.date_input("模板窗口终点", value=default_end, key="similar_scan_end")
+        mark_end = st.date_input("模板窗口终点", key="similar_scan_end")
     with r1c2:
-        recall_n = st.number_input("召回池", min_value=20, max_value=200, value=DEFAULT_RECALL_N, step=10, key="similar_recall_n")
+        recall_n = st.number_input(
+            "召回池", min_value=20, max_value=500, value=DEFAULT_SCREEN_RECALL,
+            step=50, key="similar_screen_recall",
+        )
     with r1c3:
         top_n = st.number_input("显示", min_value=5, max_value=80, value=40, step=5, key="similar_top_n")
-    with r1c4:
-        vol_share = st.slider(
-            "重排 量 ←→ 筹",
-            0,
-            100,
-            int(RANK_PRESETS[preset]),
-            key=f"similar_vol_{preset}",
-        )
     with r1c5:
         exclude_st = st.checkbox("排除 ST", value=True)
-    rank_weights = {"volume": float(vol_share), "chip": float(100 - vol_share)}
+    weights = WEIGHT_PRESETS[preset]
     if mark_end < mark_start:
         st.warning("窗口终点早于起点。")
         return
-    st.caption("这段日期只切模板股：它自己那段历史就是 demo 波形。候选股取各自最近 N 个交易日（N = 模板根数，尾部＝最新交易日）。改条件后要点金色按钮才重新扫。")
+    st.caption("这段日期只切模板股：它自己那段历史就是 demo 波形。候选股取各自最近 N 个交易日（N = 模板根数，尾部＝最新完整交易日）。改条件后要点金色按钮才重新扫。")
 
-    bars, names, source_label = _similarity_universe()
+    bars, names, source_label, dropped_session = _similarity_universe()
     if not bars:
         st.info(f"暂无可用序列。{source_label or '缺源'}。缺则空，不编 OHLC。")
         return
@@ -1046,7 +1070,7 @@ def page_similar() -> None:
         return f"{name} ({code})" if name else code
 
     all_codes = sorted(bars.keys())
-    q = st.text_input("选模板股票（代码或名称）", placeholder="远东 或 600869")
+    q = st.text_input("选模板股票（代码或名称）", placeholder="远东 或 600869", key="similar_ref_q")
     qn = (q or "").strip().lower()
     filtered = all_codes
     if qn:
@@ -1072,7 +1096,6 @@ def page_similar() -> None:
         st.info(f"参考标的在 {mark_start}～{mark_end} 不足 10 根，换区间或换一只。")
         return
     template_bars, eligible, slice_n = built
-    scan_win = None  # both sides already sliced to their own window
     skipped = len(bars) - len(eligible)
     cand_end = max(
         (str((b.get("trade_date") or [""])[-1])[:10] for b in bars.values()), default=""
@@ -1090,38 +1113,42 @@ def page_similar() -> None:
             _render_chip_hist(hist_ref, _label(ref), title="模板窗口内本地 CYQ · 不复权")
             st.caption("模板窗口内的本地 CYQ；候选筹码各自取最近窗。除权日附近会失真。")
         else:
-            st.caption("无换手，筹码通道关闭。重排只走换手（若有）。")
+            st.caption("无换手，模板筹码图关着。打分里缺的筹码读数会跳过，不把这只丢掉。")
+    tpl_stage = format_stage(describe_window(template_bars))
+    st.caption(f"模板读数 {tpl_stage}")
 
+    dropped_txt = f" · 去掉未齐的 {dropped_session}" if dropped_session else ""
     st.caption(
         f"{source_label} · 模板 {mark_start}→{mark_end} · {slice_n} 根"
         f"{'（模板单独深取）' if deep else ''} · "
-        f"候选池 {len(eligible)} 只（各自最近 {slice_n} 根，尾部到 {cand_end or '—'}）· 丢掉短序列 {skipped}"
+        f"候选池 {len(eligible)} 只（各自最近 {slice_n} 根，尾部到 {cand_end or '—'}）"
+        f"{dropped_txt} · 丢掉短序列 {skipped}"
     )
 
     sig = (
         ref, mark_start.isoformat(), mark_end.isoformat(),
-        int(recall_n), int(vol_share), bool(exclude_st),
+        int(recall_n), preset, bool(exclude_st),
     )
     st.markdown(
         '<div class="similar-cta"><div class="similar-cta-kicker">SCAN · 相似选股</div>'
-        '<p class="similar-cta-sub">先按收盘波形召回（模板历史窗 × 候选最近窗），再在池内按换手 + 筹码精排。点下面按钮开始。</p></div>',
+        '<p class="similar-cta-sub">先按收盘波形召回（默认 500），再按筹码、做盘痕迹、量、箱体、确认、均线到模板的距离打分。点下面按钮开始。</p></div>',
         unsafe_allow_html=True,
     )
-    clicked = st.button("相似选股（K线召回 + 量筹精排）", type="primary", width="stretch", key="similar_scan_btn")
+    clicked = st.button("相似选股（波形召回 + 特征距离）", type="primary", width="stretch", key="similar_scan_btn")
     if clicked:
         t0 = time.perf_counter()
         with st.spinner(f"召回 {len(eligible)} 只候选（模板 {slice_n} 根 vs 各自最近 {slice_n} 根）…"):
-            ranked, used_w = retrieve_rank(
+            ranked, info = screen_similar(
                 eligible[ref],
                 eligible,
-                window=scan_win,
                 recall_n=int(recall_n),
-                rank_weights=rank_weights,
+                weights=weights,
                 exclude_st=exclude_st,
             )
         elapsed = time.perf_counter() - t0
         ranked = [m for m in ranked if m.code != ref]
-        sidike = next(({"rank": i, "recall": m.recall_rank, "corr": m.close_corr, "fused": m.fused}
+        used_w = info["weights"]
+        sidike = next(({"rank": i, "recall": m.recall_rank, "corr": m.close_corr, "score": m.score}
                        for i, m in enumerate(ranked, start=1) if m.code == "sz.300806"), None)
         payload = {
             "ref": ref,
@@ -1129,14 +1156,16 @@ def page_similar() -> None:
             "start": mark_start.isoformat(),
             "end": mark_end.isoformat(),
             "cand_end": cand_end,
+            "dropped_session": dropped_session,
             "bars": slice_n,
             "eligible": len(eligible),
             "recall_n": int(recall_n),
             "top_n": int(top_n),
-            "vol": int(vol_share),
-            "chip": int(100 - vol_share),
+            "preset": preset,
+            "weights": used_w,
             "exclude_st": bool(exclude_st),
             "elapsed_s": round(elapsed, 2),
+            "template_stage": info["template_stage"],
             "top20": [m.code for m in ranked[:20]],
             "sz.300806": sidike,
         }
@@ -1158,10 +1187,11 @@ def page_similar() -> None:
     pl = state.get("payload") or {}
     stale = state.get("sig") != sig
     if pl:
+        wtxt = " ".join(f"{k}{v:.0%}" for k, v in (pl.get("weights") or {}).items())
         msg = (
             f"模板 {pl.get('ref_name') or pl.get('ref')} {pl.get('start')} → {pl.get('end')}（{pl.get('bars')} 根）· "
             f"候选取各自最近 {pl.get('bars')} 根到 {pl.get('cand_end') or '—'} · "
-            f"召回 {len(ranked)} · 显示 {int(top_n)} · 量{pl.get('vol')}/筹{pl.get('chip')} · {pl.get('elapsed_s')}s"
+            f"召回 {len(ranked)} · 显示 {int(top_n)} · {pl.get('preset') or ''} {wtxt} · {pl.get('elapsed_s')}s"
         )
         if stale:
             st.warning(msg + "。当前选项已改，这是上次结果；要按新条件请再点金色按钮。")
@@ -1169,7 +1199,7 @@ def page_similar() -> None:
             st.info(msg + "。")
     hit_log = (pl or {}).get("sz.300806")
     if hit_log:
-        st.caption(f"日志：斯迪克在本次召回池，精排第 {hit_log.get('rank')}，K 线召回第 {hit_log.get('recall')}。")
+        st.caption(f"日志：斯迪克在本次召回池，特征距离第 {hit_log.get('rank')}，K 线召回第 {hit_log.get('recall')}。")
     if not ranked:
         st.caption("无有效候选（短序列已丢掉）")
         return
@@ -1179,18 +1209,24 @@ def page_similar() -> None:
     rows = []
     for i, m in enumerate(shown, start=1):
         delta = m.delta
+        feat = m.features or {}
+        under = feat.get("all_under")
         rows.append({
             "排序": i,
-            "Δ": None if delta is None else (f"+{delta}" if delta > 0 else str(delta)),
             "召回": m.recall_rank,
             "代码": m.code,
             "名称": names.get(m.code, ""),
-            "K DTW": round(m.d_kline, 4),
-            "相关": None if m.close_corr is None else round(m.close_corr, 3),
-            "量 L1": _fmt_dist(m.d_vol),
-            "筹码 EMD": _fmt_dist(m.d_chip),
-            "获利": None if m.winner_ratio is None else round(m.winner_ratio, 3),
-            "集中": None if m.concentration is None else round(m.concentration, 3),
+            "分数": round(m.score, 3),
+            "末峰": _feat_cell(feat, "end_n_peaks", 0),
+            "峰日峰": _feat_cell(feat, "peak_n_peaks", 0),
+            "谷日峰": _feat_cell(feat, "trough_n_peaks", 0),
+            "偏度": _feat_cell(feat, "end_skew", 2),
+            "离散": _feat_cell(feat, "end_std", 1, 100),
+            "前峰量比": _feat_cell(feat, "vol_climax", 2),
+            "箱高": _feat_cell(feat, "box_width", 1, 100),
+            "震荡": _feat_cell(feat, "chop", 1),
+            "四线": None if under is None else ("全在价格下" if under == 1.0 else "未全亏"),
+            "Δ": None if delta is None else (f"+{delta}" if delta > 0 else str(delta)),
         })
     df = pd.DataFrame(rows)
     pick_codes = [m.code for m in shown]
@@ -1214,8 +1250,9 @@ def page_similar() -> None:
         _show(styled, width="stretch")
         pick = st.selectbox("对照个股", pick_codes, format_func=_label)
     st.caption(
-        f"点表选一只做 1v1。召回 {len(ranked)} · 显示 {len(shown)} · 重排 {wtxt}。"
-        "Δ = 召回名次 − 重排名次，正数=量和筹往前抬。"
+        f"点表选一只做 1v1。召回 {len(ranked)} · 显示 {len(shown)} · 权重 {wtxt}。"
+        "分数越小越接近模板。离散、箱高是相对收盘的百分比。"
+        "Δ = 召回名次 − 当前名次，正数=特征把这只往前抬。"
         "观察用，不是选股结论。"
         + (" 已排除 ST。" if exclude_st else "")
     )
@@ -1237,33 +1274,27 @@ def page_similar() -> None:
             )
         else:
             pick = hit_m.code
-            extra = "已在表内。" if hit_i <= int(top_n) else f"精排第 {hit_i}，当前表只显示前 {int(top_n)}，对照已切到这只。"
+            extra = "已在表内。" if hit_i <= int(top_n) else f"特征距离第 {hit_i}，当前表只显示前 {int(top_n)}，对照已切到这只。"
             st.info(
-                f"{_label(hit_m.code)} · K 线召回第 {hit_m.recall_rank} · 量筹精排第 {hit_i} · "
-                f"K DTW {hit_m.d_kline:.2f}。{extra}"
+                f"{_label(hit_m.code)} · K 线召回第 {hit_m.recall_rank} · 特征距离第 {hit_i} · "
+                f"分数 {hit_m.score:.3f} · K DTW {hit_m.d_kline:.2f}。{extra}"
             )
 
     m_pick = next((m for m in ranked if m.code == pick), shown[0])
     pick = m_pick.code
+    feat = m_pick.features or {}
+
+    def _fnum(key: str, digits: int = 2) -> str:
+        val = feat.get(key)
+        return "—" if val is None else f"{float(val):.{digits}f}"
+
     _sec(f"1v1 对照 · {_label(view_ref)}  vs  {_label(pick)}")
     _card_row(
         [
-            {"label": "K DTW", "value": f"{m_pick.d_kline:.2f}", "sub": "越小越像波形"},
-            {
-                "label": "收盘相关",
-                "value": "—" if m_pick.close_corr is None else f"{m_pick.close_corr:.2f}",
-                "sub": "1=同向同形",
-            },
-            {
-                "label": "量 L1",
-                "value": "—" if _fmt_dist(m_pick.d_vol) is None else f"{m_pick.d_vol:.3f}",
-                "sub": "换手节奏",
-            },
-            {
-                "label": "筹码 EMD",
-                "value": "—" if _fmt_dist(m_pick.d_chip) is None else f"{m_pick.d_chip:.3f}",
-                "sub": "成本分布",
-            },
+            {"label": "分数", "value": f"{m_pick.score:.3f}", "sub": "越小越接近模板"},
+            {"label": "K DTW", "value": f"{m_pick.d_kline:.2f}", "sub": "召回距离"},
+            {"label": "前峰量比", "value": _fnum("vol_climax"), "sub": "末日量 / 此前放量峰"},
+            {"label": "末峰", "value": _fnum("end_n_peaks", 0), "sub": "末日筹码峰数"},
             {
                 "label": "Δ",
                 "value": "—" if m_pick.delta is None else (f"+{m_pick.delta}" if m_pick.delta > 0 else str(m_pick.delta)),
@@ -1273,6 +1304,12 @@ def page_similar() -> None:
         ],
         cols=5,
     )
+    st.caption(m_pick.stage)
+    group_txt = " · ".join(
+        f"{k} {'—' if v is None else f'{v:.2f}'}" for k, v in (m_pick.groups or {}).items()
+    )
+    if group_txt:
+        st.caption(f"组距离（越小越近）{group_txt}")
     st.caption("两根日 K 各用自己的价格轴，不把 10 元和 1000 元叠到双 Y 上。波形对比走下面的归一化叠线；换手 % 已经同单位，直接叠。")
     _render_kline_panel(
         _ohlc_from_bars(view_bars.get(view_ref, {}), slice_n),

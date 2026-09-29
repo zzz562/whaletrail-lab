@@ -12,8 +12,9 @@ whaletrail/
 ├── metrics/       收益/回撤/夏普/胜率/盈亏比（FIFO 计算 PnL）
 ├── reporting/     watchlist Markdown 报表
 ├── storage/       SQLite（runs / trades / snapshots / daily_kline / index_kline / ashare_*）
-├── similarity.py  收盘 DTW 召回 + 换手 L1/筹码 EMD 重排（retrieve_rank；rank_multi 仍保留）
-├── chips.py       窗口内 CYQ 直方图 + 1 维 Wasserstein
+├── similarity.py  收盘 DTW 召回 + 旧版换手 L1/筹码 EMD 重排（retrieve_rank；ashare-similar.py 仍走这条；rank_multi 仍保留）
+├── screen.py      相似选股现用打分：DTW 召回后按筹码/做盘/量/箱体/确认/均线到模板的距离排序（screen_similar）
+├── chips.py       窗口内 CYQ 直方图 + 1 维 Wasserstein + 分布峰与矩（distribution_stats）
 └── indicators.py  共享指标（sma / atr / cross_signal）
 ```
 
@@ -29,7 +30,7 @@ tvscreener ─► TVScreenerSource ─► quote_snapshots ─► build_daily_his
                                           └────────► watchlist_report.md
 
 baostock  ─► BaostockSource ─► daily_kline / index_kline / ashare_universe / ashare_industry / ashare_index_constituents
-                                          ├────────► dashboard 相似选股（daily_bars → retrieve_rank：K 召回，量/筹重排）
+                                          ├────────► dashboard 相似选股（daily_bars → screen_similar：K 召回，特征距离；retrieve_rank 仅旧 CLI）
                                           └────────► check-ashare-data.py（21:45 完整性体检）/ 抓取失败 ─► Telegram 告警
 ```
 

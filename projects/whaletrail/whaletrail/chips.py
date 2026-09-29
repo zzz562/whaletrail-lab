@@ -174,3 +174,88 @@ def chip_stats(
             best = min(best, j - i + 1)
     concentration = best / n
     return winner, concentration
+
+
+def distribution_stats(
+    hist: Sequence[float],
+    pmin: float,
+    pmax: float,
+    close: float,
+    min_mass: float = 0.12,
+) -> dict | None:
+    """Moments and separated peaks of one chip histogram.
+
+    A peak is a smoothed local maximum whose valley-to-valley mass is at
+    least *min_mass*.  Location is in yuan and as a fraction of *close*,
+    so a pile sitting on the price reads near 0 and overhead supply is
+    positive.  Standard deviation and skew describe width and the tail
+    that never becomes its own peak.
+    """
+    h = _as_float(hist)
+    mass = float(h.sum())
+    if mass <= 0 or not np.isfinite(close) or close <= 0:
+        return None
+    h = h / mass
+    n = h.size
+    if pmax > pmin:
+        width = (pmax - pmin) / n
+        centers = pmin + (np.arange(n) + 0.5) * width
+    else:
+        centers = np.full(n, pmin)
+    mean = float(np.sum(h * centers))
+    var = float(np.sum(h * (centers - mean) ** 2))
+    std = var ** 0.5
+    if std > 1e-12:
+        z = (centers - mean) / std
+        skew = float(np.sum(h * z ** 3))
+        kurt = float(np.sum(h * z ** 4))
+    else:
+        skew = 0.0
+        kurt = 0.0
+    kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0])
+    kernel /= kernel.sum()
+    smooth = np.convolve(h, kernel, mode="same")
+    # Edge bins count. A pile at the window low or high sits on the axis end,
+    # and that is the usual "cost stacked at the bottom / top" reading.
+    maxima = []
+    for i in range(n):
+        if i == 0:
+            if n == 1 or smooth[0] > smooth[1]:
+                maxima.append(i)
+        elif i == n - 1:
+            if smooth[i] > smooth[i - 1]:
+                maxima.append(i)
+        elif smooth[i] >= smooth[i - 1] and smooth[i] > smooth[i + 1]:
+            maxima.append(i)
+    if not maxima:
+        maxima = [int(np.argmax(smooth))]
+    peaks: list[dict] = []
+    if maxima:
+        bounds = [0]
+        for left, right in zip(maxima, maxima[1:]):
+            seg = smooth[left : right + 1]
+            bounds.append(left + int(np.argmin(seg)))
+        bounds.append(n - 1)
+        for mode, lo, hi in zip(maxima, bounds[:-1], bounds[1:]):
+            share = float(h[lo : hi + 1].sum())
+            if share < min_mass:
+                continue
+            px = float(centers[mode])
+            peaks.append({
+                "px": px,
+                "vs_close": px / close - 1.0,
+                "axis": (px - pmin) / (pmax - pmin) if pmax > pmin else 0.0,
+                "mass": share,
+            })
+        peaks.sort(key=lambda item: -item["mass"])
+    return {
+        "mean": mean,
+        "std": std,
+        "std_over_close": std / close,
+        "mean_vs_close": mean / close - 1.0,
+        "skew": skew,
+        "kurt": kurt,
+        "n_peaks": len(peaks),
+        "peaks": peaks,
+        "mass_below_close": float(h[centers <= close + 1e-9].sum()),
+    }

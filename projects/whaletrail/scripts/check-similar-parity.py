@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parity check: the 相似选股 page and ashare-similar.py must rank identically.
+"""Parity check: the 相似选股 page and similar-screen.py must rank identically.
 
 Drives the dashboard script headlessly (streamlit AppTest, i.e. the real page
 code) and the CLI with the same reference and template window, then compares
@@ -53,8 +53,8 @@ def page_top(symbol: str, start: str | None, end: str | None, top: int) -> list[
 
 
 def cli_top(symbol: str, start: str | None, end: str | None, window: int, top: int) -> tuple[list[str], str]:
-    args = [str(ROOT / ".venv/bin/python"), str(ROOT / "scripts" / "ashare-similar.py"),
-            "--symbol", symbol, "--top", str(top)]
+    args = [str(ROOT / ".venv/bin/python"), str(ROOT / "scripts" / "similar-screen.py"),
+            "--symbol", symbol, "--top", str(top), "--recall", "500", "--preset", "偏筹码"]
     args += ["--start", start, "--end", end] if start else ["--window", str(window)]
     run = subprocess.run(args, cwd=str(ROOT), capture_output=True, text=True)
     if run.returncode != 0:
