@@ -132,7 +132,9 @@ Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，�
 ```bash
 cd ~/Projects/whaletrail-lab/projects/whaletrail
 .venv/bin/python scripts/fetch-baostock-universe.py --no-alert        # 手动补数不推送
-.venv/bin/python scripts/fetch-baostock-universe.py --from 20180101 --to 20181231 --codes "$(cat /tmp/codes2018.txt)" --no-alert
+# 补历史：例如把最早一根是 2019-01-02 的标的补到 2018 年
+CODES=$(sqlite3 results/whaletrail.db "SELECT group_concat(code, ',') FROM (SELECT code, MIN(trade_date) mn FROM daily_kline GROUP BY code) WHERE mn = '2019-01-02'")
+.venv/bin/python scripts/fetch-baostock-universe.py --from 20180101 --to 20181231 --codes "$CODES" --no-alert
 .venv/bin/python scripts/check-ashare-data.py --no-alert              # 只体检
 ```
 
