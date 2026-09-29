@@ -54,10 +54,14 @@ def main() -> int:
         "--coverage", type=float, default=0.95, help="min stored/universe ratio (default 0.95)"
     )
     parser.add_argument("--no-alert", action="store_true", help="print only, never push")
+    parser.add_argument(
+        "--as-of", help="check as if today were YYYY-MM-DD (default: today in China time)"
+    )
     args = parser.parse_args()
 
     now = datetime.now(CN_TZ)
-    days = recent_trading_days(TradingCalendar(), args.days, now.date())
+    today = date.fromisoformat(args.as_of) if args.as_of else now.date()
+    days = recent_trading_days(TradingCalendar(), args.days, today)
     if not days:
         print("⚠️ 无法确定最近交易日（交易日历不可用），跳过检查")
         return 0
