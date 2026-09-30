@@ -108,12 +108,12 @@ openclaw cron run whaletrail-ashare      # 手动触发 A 股 paper
 
 Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，脚本会自动从缺口日重拉。
 
-系统 crontab（mini）每工作日 16:30 / 20:00 两班例行增量抓取（全市场日 K + 静态表 + `index_kline` 基准指数），日志 `logs/fetch-baostock.log`；21:45 再跑一次完整性体检。20:00 班兜底 baostock 当日 EOD 发布晚于 16:30 的情况：
+系统 crontab（mini）每工作日 16:30 / 20:00 两班例行增量抓取（全市场日 K + 静态表 + `index_kline` 基准指数），日志 `logs/fetch-baostock.log`；21:45 再跑一次完整性体检（`--daily`，无论好坏都推一条 Telegram 心跳）。20:00 班兜底 baostock 当日 EOD 发布晚于 16:30 的情况：
 
 ```cron
 30 16 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/fetch-baostock-universe.py >> logs/fetch-baostock.log 2>&1
 0 20 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/fetch-baostock-universe.py >> logs/fetch-baostock.log 2>&1
-45 21 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/check-ashare-data.py >> logs/check-ashare-data.log 2>&1
+45 21 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/check-ashare-data.py --daily >> logs/check-ashare-data.log 2>&1
 ```
 
 抓取脚本的三道防线（2026-09-29 加，起因是 9-23 那班撞上 baostock 半关连接后空转 6 天）：
@@ -126,6 +126,16 @@ Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，�
 注意 baostock 同一时刻只认一个会话：两个进程同时跑（手动 + cron，或两次手动）会互相踢下线，报 `10001001 用户未登录`，症状是后半段标的静默失败（2026-09-29 补 2018 历史时踩到，1055 只只补了 685 只）。**连「登录探一下今天数据发没发」都会踢掉正在跑的班次**——2026-09-30 16:30 那班就是被一个探测脚本在 16:30:18 登录打断的，3,812 只报未登录（告警正常推送）。所以：锁只挡 cron 之间；任何会 `bs.login()` 的动作，先 `pgrep -f fetch-baostock-universe.py` 确认没有班次在跑，并且探测本身要用 SIGALRM 限时（半关连接会让 baostock 的读循环空转不返回）。
 
 告警经 `whaletrail/reporting/telegram.py` 发送：token 取 `TG_BOT_TOKEN`/`TG_CHAT_ID`，缺省读 `~/.config/whaletrail/telegram.env`（600，git 之外），依次尝试环境代理 → 直连 → `127.0.0.1:7892`。体检口径：最近 3 个交易日（深交所日历）在 `daily_kline` 覆盖 ≥95% 上市名单、`index_kline` 8 条基准齐全，不达标推送并 exit 1。
+
+Telegram 每天推什么（工作日 21:45，`--daily`）：
+
+| 情况 | 消息 |
+|------|------|
+| 交易日、数据齐全 | `✅ A股入库正常（09-30 21:45）• 最近 3 个交易日日线完整：09-28 → 09-30（5224 只上市）• 基准指数 8/8 齐全 • 最近写入 daily_kline 2026-09-30 / index_kline 2026-09-30` |
+| 交易日、缺数 | `⚠️ A股数据不完整` + 具体哪个交易日少了多少 + 最近写入日期 + 排查提示（exit 1） |
+| 非交易日（节假日/调休） | `· 今日休市（10-01 非交易日）• 最近交易日 09-30 日线与基准指数完整` |
+
+另外抓取脚本自己也会推：单只失败超 300 只、基准指数有失败、超 90 分钟预算被截断、或硬失败（登录/静态表/写库异常）时各推一条。周末不推体检（`1-5`），需要一周七天都推就改 crontab。
 
 手动补数/体检：
 

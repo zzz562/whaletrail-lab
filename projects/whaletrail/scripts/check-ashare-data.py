@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """Nightly A-share data completeness check for the baostock pipeline.
 
-Cron runs this after the last fetch of the day (21:40 on weekdays).  It compares
+Cron runs this after the last fetch of the day (21:45 on weekdays).  It compares
 the most recent *expected* trading days (SZSE calendar, ``data/trading_calendar.py``)
-against what ``daily_kline`` / ``index_kline`` actually hold, and pushes a
-Telegram alert when a day is missing or thin — the case a silently failing or
-hanging fetch leaves behind.
+against what ``daily_kline`` / ``index_kline`` actually hold.
+
+Two modes:
+
+- default: push only when a day is missing or thin (the case a silently failing
+  or hanging fetch leaves behind);
+- ``--daily``: also push a short "入库正常" heartbeat every run, so the daily
+  cron gives a positive confirmation instead of staying silent (a non-trading
+  day reports one line: 休市 + the last trading day's status).
 
 Exit code 0 = healthy, 1 = problems found (alert attempted).
 
 Usage:
-  python scripts/check-ashare-data.py
+  python scripts/check-ashare-data.py --daily
   python scripts/check-ashare-data.py --days 5 --coverage 0.9
   python scripts/check-ashare-data.py --db /tmp/other.db --no-alert
+  python scripts/check-ashare-data.py --as-of 2026-09-29 --daily
 """
 
 from __future__ import annotations
@@ -55,13 +62,20 @@ def main() -> int:
     )
     parser.add_argument("--no-alert", action="store_true", help="print only, never push")
     parser.add_argument(
+        "--daily",
+        action="store_true",
+        help="也推送「入库正常」心跳（默认只在异常时推送）",
+    )
+    parser.add_argument(
         "--as-of", help="check as if today were YYYY-MM-DD (default: today in China time)"
     )
     args = parser.parse_args()
 
     now = datetime.now(CN_TZ)
     today = date.fromisoformat(args.as_of) if args.as_of else now.date()
-    days = recent_trading_days(TradingCalendar(), args.days, today)
+    calendar = TradingCalendar()
+    days = recent_trading_days(calendar, args.days, today)
+    today_is_trading = calendar.is_trading_day(today)
     if not days:
         print("⚠️ 无法确定最近交易日（交易日历不可用），跳过检查")
         return 0
@@ -127,11 +141,26 @@ def main() -> int:
             print("⚠️ Telegram 告警发送失败（见上）")
         return 1
 
-    print(
-        f"OK：{days[0].strftime('%Y-%m-%d')} → {days[-1].strftime('%Y-%m-%d')} "
-        f"{len(days)} 个交易日日线与基准指数完整（{listed} 只上市）· "
-        f"最近写入 daily_kline {stock_max} / index_kline {index_max}"
-    )
+    span = f"{days[0].strftime('%m-%d')} → {days[-1].strftime('%m-%d')}"
+    if today_is_trading:
+        summary = (
+            f"✅ A股入库正常（{now:%m-%d %H:%M}）\n"
+            f"• 最近 {len(days)} 个交易日日线完整：{span}（{listed} 只上市）\n"
+            f"• 基准指数 {len(BENCH_INDEXES)}/{len(BENCH_INDEXES)} 齐全\n"
+            f"• 最近写入 daily_kline {stock_max} / index_kline {index_max}"
+        )
+    else:
+        summary = (
+            f"· 今日休市（{now:%m-%d} 非交易日）\n"
+            f"• 最近交易日 {span} 日线与基准指数完整（{listed} 只上市）\n"
+            f"• 最近写入 daily_kline {stock_max} / index_kline {index_max}"
+        )
+    print("OK：" + summary.replace("\n", " | "))
+    if args.daily and not args.no_alert:
+        if tg_send(summary, quiet=True):
+            print("Telegram 心跳已发送")
+        else:
+            print("⚠️ Telegram 心跳发送失败")
     return 0
 
 
