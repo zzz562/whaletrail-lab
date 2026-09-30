@@ -18,7 +18,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,22 +30,38 @@ LOG_PATH = ROOT / "logs" / "similar-scan.log"
 CODE_RE = re.compile(r"^(sh|sz|bj)\.\d{6}$")
 
 
+def _fail_if(app: AppTest) -> None:
+    if app.exception:
+        raise SystemExit(f"page raised: {[str(e.value) for e in app.exception]}")
+
+
 def page_top(symbol: str, start: str | None, end: str | None, top: int) -> list[str]:
-    """Top rows as the page produced them, read back from the scan log."""
+    """Top rows as the page produced them, read back from the scan log.
+
+    The page opens on the saved 远东 template and 均衡. This drives 自选 plus
+    偏筹码 so the comparison stays on the CLI's preset.
+    """
     before = len(LOG_PATH.read_text(encoding="utf-8").splitlines()) if LOG_PATH.exists() else 0
     app = AppTest.from_file(str(ROOT / "scripts" / "dashboard.py"), default_timeout=900)
     app.query_params["page"] = "similar"
     app.run()
+    _fail_if(app)
+    app.selectbox(key="similar_book_demo").set_value("自选")
+    app.radio(key="similar_screen_preset").set_value("偏筹码")
     if start:
-        app.date_input(key="similar_scan_start").set_value(date.fromisoformat(start))
-        app.date_input(key="similar_scan_end").set_value(date.fromisoformat(end))
-        app.run()
-    app.text_input[0].set_value(symbol.split(".")[-1])
+        start_d = date.fromisoformat(start)
+        end_d = date.fromisoformat(end)
+    else:
+        end_d = date.today()
+        start_d = end_d - timedelta(days=126)
+    app.date_input(key="similar_scan_start").set_value(start_d)
+    app.date_input(key="similar_scan_end").set_value(end_d)
+    app.selectbox(key="similar_ref_pick").set_value(symbol)
     app.run()
+    _fail_if(app)
     app.button(key="similar_scan_btn").click()
     app.run()
-    if app.exception:
-        raise SystemExit(f"page raised: {[str(e.value) for e in app.exception]}")
+    _fail_if(app)
     lines = LOG_PATH.read_text(encoding="utf-8").splitlines()
     if len(lines) - before != 1:
         raise SystemExit("page did not write exactly one scan log line")

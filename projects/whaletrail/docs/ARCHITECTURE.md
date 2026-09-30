@@ -14,6 +14,7 @@ whaletrail/
 ├── storage/       SQLite（runs / trades / snapshots / daily_kline / index_kline / ashare_*）
 ├── similarity.py  收盘 DTW 召回 + 旧版换手 L1/筹码 EMD 重排（retrieve_rank；ashare-similar.py 仍走这条；rank_multi 仍保留）
 ├── screen.py      相似选股现用打分：DTW 召回后按筹码/做盘/量/箱体/确认/均线到模板的距离排序（screen_similar）
+├── context.py     相似选股表上的背景：板块属性、流通市值档、当日相对上证和证监会行业。不进 screen_similar 的分数
 ├── chips.py       窗口内 CYQ 直方图 + 1 维 Wasserstein + 分布峰与矩（distribution_stats）
 └── indicators.py  共享指标（sma / atr / cross_signal）
 ```

@@ -22,13 +22,17 @@ from whaletrail.data.baostock_source import to_baostock_code
 from whaletrail.data.history import build_daily_history
 from whaletrail.data.watchlist import load_watchlist
 from whaletrail.metrics.performance import calculate_metrics, compute_trade_pnl
-from whaletrail.chips import chip_histogram
+from whaletrail.chips import chip_histogram, distribution_stats
+from whaletrail.context import (
+    cap_text,
+    load_index_moves,
+    name_context,
+    sector_moves,
+)
 from whaletrail.screen import (
     DEFAULT_SCREEN_RECALL,
     DEMOS,
     WEIGHT_PRESETS,
-    describe_window,
-    format_stage,
     screen_similar,
     trim_partial_session,
 )
@@ -63,7 +67,7 @@ VALID_LABELS = {"观察", "接近", "触发"}
 st.markdown("""<style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 :root { --wt-bg:#0a0e17; --wt-surface:#111826; --wt-surface2:#0d1320; --wt-border:#1e2a3a; --wt-text:#e6edf3; --wt-muted:#8b98a9; --wt-gold:#e6b450; --wt-blue:#38bdf8; --wt-up:#4ade80; --wt-down:#f87171; --wt-mono:'JetBrains Mono',ui-monospace,monospace; }
-html,body,.stApp { background:var(--wt-bg); color:var(--wt-text); font-family:'Inter',sans-serif; }
+html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stHeader"] { background:var(--wt-bg); color:var(--wt-text); font-family:'Inter',sans-serif; }
 .block-container { padding:1rem 1.6rem 1.8rem; max-width:1440px; }
 #MainMenu, footer { visibility:hidden; height:0; }
 header[data-testid="stHeader"] { background:transparent; }
@@ -75,10 +79,10 @@ section[data-testid="stSidebar"], [data-testid="stSidebar"], [data-testid="stSid
 .topbar { display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin:0 0 8px; }
 .topbar .brand-title { font-weight:800; font-size:1.05rem; }
 .topbar .brand-sub { font-size:10px; letter-spacing:.18em; color:var(--wt-gold); font-weight:700; }
-.kicker { font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--wt-gold); font-weight:700; }
-.page-title { font-size:1.35rem; font-weight:800; letter-spacing:-.02em; margin:0 0 2px; }
+.kicker { font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--wt-muted); font-weight:700; }
+.page-title { font-size:1.35rem; font-weight:800; letter-spacing:-.02em; margin:0 0 2px; color:var(--wt-text); }
 .page-sub { color:var(--wt-muted); font-size:.82rem; margin-bottom:12px; }
-.m-card { background:linear-gradient(180deg,var(--wt-surface),#0f1622); border:1px solid var(--wt-border); border-radius:10px; padding:11px 14px 10px; position:relative; overflow:hidden; height:100%; }
+.m-card { background:var(--wt-surface); border:1px solid var(--wt-border); border-radius:10px; padding:11px 14px 10px; position:relative; overflow:hidden; height:100%; }
 .m-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:var(--m-accent,var(--wt-gold)); }
 .m-label { font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--wt-muted); font-weight:600; }
 .m-value { font-family:var(--wt-mono); font-size:1.45rem; font-weight:700; margin-top:6px; font-variant-numeric:tabular-nums; }
@@ -93,7 +97,7 @@ section[data-testid="stSidebar"], [data-testid="stSidebar"], [data-testid="stSid
 .pill-sell { background:rgba(248,113,113,.1); color:var(--wt-down); border:1px solid rgba(248,113,113,.35); }
 .svc { display:flex; justify-content:space-between; align-items:center; padding:7px 12px; border:1px solid var(--wt-border); border-radius:8px; background:var(--wt-surface2); margin-bottom:6px; }
 .note { border:1px solid var(--wt-border); border-radius:8px; padding:8px 12px; color:var(--wt-muted); font-size:.8rem; background:var(--wt-surface2); margin:0 0 12px; }
-.sec-label { font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--wt-gold); font-weight:700; margin:18px 0 8px; }
+.sec-label { font-size:.92rem; letter-spacing:0; text-transform:none; color:var(--wt-text); font-weight:700; margin:16px 0 8px; }
 .brand { padding:4px 0 14px; border-bottom:1px solid var(--wt-border); margin-bottom:12px; }
 .brand-title { font-weight:800; font-size:1.05rem; }
 .brand-sub { font-size:10px; letter-spacing:.18em; color:var(--wt-gold); font-weight:700; margin-top:2px; }
@@ -103,19 +107,21 @@ section[data-testid="stSidebar"], [data-testid="stSidebar"], [data-testid="stSid
 [data-testid="stHorizontalBlock"] { gap:1.25rem; align-items:flex-start; }
 [data-testid="column"] { min-width:0; overflow:hidden; }
 [data-testid="stElementToolbar"], [data-testid="stElementToolbarButton"] { display:none !important; }
-.stButton > button { background:var(--wt-surface); border:1px solid var(--wt-border); color:var(--wt-text); border-radius:8px; font-weight:600; }
+.stButton > button { background:var(--wt-surface); border:1px solid var(--wt-border); color:var(--wt-text); border-radius:8px; font-weight:600; min-height:38px; }
 button[kind="primary"],
 [data-testid="stBaseButton-primary"],
 [data-testid="baseButton-primary"],
 .stButton > button[data-testid="baseButton-primary"] {
   background:#e6b450 !important; color:#0a0e17 !important; border:0 !important;
-  font-weight:800 !important; font-size:1.05rem !important; min-height:52px !important;
-  letter-spacing:.02em; border-radius:10px !important;
+  font-weight:700 !important; font-size:.95rem !important; min-height:38px !important;
+  letter-spacing:0; border-radius:8px !important;
 }
-.similar-cta { border:1px solid rgba(230,180,80,.55); border-radius:10px; padding:12px 14px 2px; margin:14px 0 18px;
-  background:linear-gradient(180deg, rgba(230,180,80,.12), rgba(17,24,38,.4)); }
-.similar-cta-kicker { font-size:11px; letter-spacing:.18em; font-weight:800; color:var(--wt-gold); margin:0 0 8px; }
-.similar-cta-sub { color:var(--wt-muted); font-size:.8rem; margin:0 0 10px; }
+[data-testid="stWidgetLabel"] p { font-size:.85rem; font-weight:600; color:var(--wt-text); }
+[data-testid="stVerticalBlockBorderWrapper"] { background:var(--wt-surface); border-radius:10px; }
+.opt-rule { border-top:1px solid var(--wt-border); margin:2px 0 10px; padding-top:10px; font-size:.9rem; font-weight:700; color:var(--wt-text); }
+.opt-rule span { color:var(--wt-muted); font-weight:500; }
+.st-key-similar_scan_btn { margin-top: 10px; }
+.st-key-similar_scan_btn button { width:100% !important; min-height:44px !important; font-size:1rem !important; }
 </style>""", unsafe_allow_html=True)
 
 _fragment = getattr(st, "fragment", None)
@@ -476,7 +482,8 @@ def _pick_gold_sma(files: list[str]) -> Optional[str]:
     return None
 
 def _page_header(title: str, sub: str = "") -> None:
-    st.markdown(f'<div class="kicker">WHALETRAIL</div><div class="page-title">{title}</div><div class="page-sub">{sub}</div>', unsafe_allow_html=True)
+    sub_html = f'<div class="page-sub">{sub}</div>' if sub else ""
+    st.markdown(f'<div class="page-title">{title}</div>{sub_html}', unsafe_allow_html=True)
 
 def _sec(label: str) -> None:
     st.markdown(f'<div class="sec-label">{label}</div>', unsafe_allow_html=True)
@@ -515,11 +522,12 @@ def _show(obj, **kwargs) -> None:
 def _alt_dark(chart: alt.Chart) -> alt.Chart:
     return (chart.configure(background="#111826").configure_view(strokeOpacity=0)
             .configure_axis(gridColor="#1e2a3a", domainColor="#243244", labelColor="#8b98a9", titleColor="#8b98a9", tickColor="#243244")
-            .configure_legend(labelColor="#8b98a9", titleColor="#8b98a9"))
+            .configure_legend(labelColor="#8b98a9", titleColor="#8b98a9")
+            .configure_title(color="#e6edf3"))
 
 def _style_base(s: Any) -> Any:
     return (s.set_properties(**{"color": "#e6edf3", "font-family": "var(--wt-mono)", "font-size": "12.5px", "padding": "6px 12px", "border-bottom": "1px solid #182231", "text-align": "right"})
-            .set_table_styles([{"selector": "th", "props": [("background-color", "#0d1320"), ("color", "#8b98a9"), ("font-size", "10.5px"), ("text-transform", "uppercase"), ("letter-spacing", ".1em"), ("padding", "8px 12px"), ("border-bottom", "1px solid #1e2a3a")]}]))
+            .set_table_styles([{"selector": "th", "props": [("background-color", "#0d1320"), ("color", "#8b98a9"), ("font-size", "12px"), ("text-transform", "none"), ("letter-spacing", "0"), ("padding", "8px 12px"), ("border-bottom", "1px solid #1e2a3a")]}]))
 
 def _num_style(v, fmt: str = "") -> str:
     try:
@@ -820,6 +828,19 @@ def _similarity_universe(
         names[item.tv_symbol] = item.name
     return bars, names, f"A股 watchlist {len(bars)} 只 · tvscreener 快照积累（仅 trailing，无换手/筹码）", None
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _market_frame() -> tuple[dict[str, str], dict[str, dict[str, float]]]:
+    """CSRC industry and benchmark pct_chg. Empty when the analysis DB is absent."""
+    try:
+        repo = Repository(DB_PATH)
+        industry = repo.industry_map()
+        moves = load_index_moves(repo.conn)
+        repo.close()
+        return industry, moves
+    except Exception:
+        return {}, {}
+
 _PAIR_SCALE = alt.Scale(range=["#e6b450", "#38bdf8"])
 _CHART_W = 980
 
@@ -856,7 +877,7 @@ def _render_kline_panel(
 ) -> None:
     """Daily K + volume. Own price axis. Optional yellow band = 圈定区间."""
     if df.empty:
-        st.info("该窗口无日 K。空图，不编 OHLC。")
+        st.info("这段没有日 K。")
         return
     plot = df.copy()
     plot["up"] = plot["close"] >= plot["open"]
@@ -897,29 +918,127 @@ def _render_kline_panel(
     st.altair_chart(_alt_dark(ch), width="stretch")
 
 
-def _render_chip_hist(
-    hist_a, name_a: str, hist_b=None, name_b: str | None = None, title: str = "", width: int = _CHART_W
-) -> None:
+def _chip_snapshot(bars: dict, slice_n: int) -> dict | None:
+    """Chip pile on the last bar of this window, in yuan."""
+    if not (bars.get("turn") and bars.get("high") and bars.get("low") and bars.get("close")):
+        return None
+    n = max(1, int(slice_n))
+    high = bars["high"][-n:]
+    low = bars["low"][-n:]
+    close_s = bars["close"][-n:]
+    turn = bars["turn"][-n:]
+    if not close_s:
+        return None
+    ts = (bars.get("tradestatus") or [1] * len(close_s))[-n:]
+    hist, pmin, pmax = chip_histogram(high, low, close_s, turn, ts)
+    if float(sum(hist)) <= 0:
+        return None
+    last = close_s[-1]
+    if last is None or last != last or float(last) <= 0:
+        return None
+    last = float(last)
+    dates = [str(d)[:10] for d in (bars.get("trade_date") or [])]
+    return {
+        "hist": hist,
+        "pmin": float(pmin),
+        "pmax": float(pmax),
+        "close": last,
+        "day": dates[-1] if dates else "",
+        "stats": distribution_stats(hist, float(pmin), float(pmax), last),
+    }
+
+
+def _last_chip_chart(snap: dict, title: str, width: int = 460) -> alt.Chart:
+    """Last-day chip bars, close as a gold rule, winner ratio on that rule."""
+    hist = snap["hist"]
+    pmin, pmax = float(snap["pmin"]), float(snap["pmax"])
+    close = float(snap["close"])
+    n = len(hist)
+    if pmax > pmin:
+        step = (pmax - pmin) / n
+        centers = [pmin + (i + 0.5) * step for i in range(n)]
+        domain = [pmin, pmax]
+        half = step / 2
+    else:
+        centers = [pmin] * n
+        pad = max(abs(pmin) * 0.02, 0.05)
+        domain = [pmin - pad, pmin + pad]
+        half = pad
+    stats = snap.get("stats") or {}
+    winner = stats.get("mass_below_close")
+    winner_txt = "—" if winner is None else f"{float(winner):.1%}"
     rows = []
-    n = len(hist_a)
-    for i, v in enumerate(hist_a):
-        rows.append({"rel": (i + 0.5) / n, "mass": float(v), "series": name_a})
-    if hist_b is not None and name_b:
-        n2 = len(hist_b)
-        for i, v in enumerate(hist_b):
-            rows.append({"rel": (i + 0.5) / n2, "mass": float(v), "series": name_b})
-    color = (
-        alt.Color("series:N", scale=_PAIR_SCALE, legend=alt.Legend(title=None, orient="top"))
-        if hist_b is not None
-        else alt.Color("series:N", legend=None)
+    for i, mass in enumerate(hist):
+        px = centers[i]
+        rows.append({
+            "x0": px - half,
+            "x1": px + half,
+            "px": px,
+            "mass": float(mass),
+            "side": "获利" if px <= close else "套牢",
+        })
+    df = pd.DataFrame(rows)
+    x_scale = alt.Scale(domain=domain, nice=False, zero=False)
+    bars = alt.Chart(df).mark_bar().encode(
+        x=alt.X("x0:Q", scale=x_scale, title="价格"),
+        x2="x1:Q",
+        y=alt.Y("mass:Q", title="筹码", axis=alt.Axis(format="%")),
+        color=alt.Color(
+            "side:N",
+            scale=alt.Scale(domain=["获利", "套牢"], range=["#f87171", "#64748b"]),
+            legend=alt.Legend(title=None, orient="top"),
+        ),
+        tooltip=[
+            alt.Tooltip("px:Q", title="价格", format=".2f"),
+            alt.Tooltip("mass:Q", title="质量", format=".1%"),
+            alt.Tooltip("side:N", title=""),
+        ],
     )
-    ch = alt.Chart(pd.DataFrame(rows)).mark_bar(opacity=0.55, size=8).encode(
-        x=alt.X("rel:Q", title="相对价位 0=该票窗口最低"),
-        y=alt.Y("mass:Q", title="筹码质量"),
-        color=color,
-        tooltip=["series", "rel", "mass"],
-    ).properties(height=180, width=width, title=title or None)
-    st.altair_chart(_alt_dark(ch), width="stretch")
+    rule = alt.Chart(pd.DataFrame({"px": [close]})).mark_rule(
+        color="#e6b450", strokeWidth=2,
+    ).encode(x=alt.X("px:Q", scale=x_scale))
+    align = "right" if close >= (domain[0] + domain[1]) / 2 else "left"
+    label = alt.Chart(pd.DataFrame({
+        "px": [close],
+        "mass": [float(df["mass"].max()) if len(df) else 0.0],
+        "text": [f"收盘 {close:.2f} · 获利 {winner_txt}"],
+    })).mark_text(
+        align=align, dx=-6 if align == "right" else 6, baseline="bottom",
+        color="#e6edf3", fontSize=12, fontWeight=600, font="PingFang SC",
+    ).encode(x=alt.X("px:Q", scale=x_scale), y="mass:Q", text="text:N")
+    layers = bars + rule + label
+    peaks = stats.get("peaks") or []
+    if peaks:
+        peak_rows = []
+        for peak in peaks:
+            i = min(range(n), key=lambda k: abs(centers[k] - float(peak["px"])))
+            peak_rows.append({
+                "px": centers[i],
+                "mass": float(hist[i]),
+                "text": f"{float(peak['px']):.2f}",
+            })
+        peak_df = pd.DataFrame(peak_rows)
+        layers = layers + alt.Chart(peak_df).mark_point(
+            shape="triangle-down", size=70, color="#e6b450", filled=True,
+        ).encode(
+            x=alt.X("px:Q", scale=x_scale), y="mass:Q",
+            tooltip=[alt.Tooltip("text:N", title="峰")],
+        )
+    return layers.properties(height=220, width=width, title=title or None)
+
+
+def _render_last_chip(snap: dict, title: str, width: int = 460) -> None:
+    snap_stats = snap.get("stats") or {}
+    peaks = snap_stats.get("peaks") or []
+    winner = snap_stats.get("mass_below_close")
+    winner_txt = "—" if winner is None else f"{float(winner):.1%}"
+    st.altair_chart(_alt_dark(_last_chip_chart(snap, title, width)), width="stretch")
+    peak_txt = "、".join(
+        f"{float(p['px']):.2f}（{float(p['vs_close']):+.1%}，{float(p['mass']):.0%}）"
+        for p in peaks
+    ) or "没有分开的峰"
+    day = snap.get("day") or "窗口最后一天"
+    st.caption(f"{day} · 获利 {winner_txt} · 峰 {peak_txt}")
 
 
 def _overlay_pair(
@@ -987,19 +1106,6 @@ def _ref_deep_history(code: str, start: str) -> dict[str, dict[str, list]]:
         return {}
 
 
-def _chip_of(bars: dict, slice_n: int):
-    if not (bars.get("turn") and bars.get("high") and bars.get("low") and bars.get("close")):
-        return None
-    hist, _, _ = chip_histogram(
-        bars["high"][-slice_n:],
-        bars["low"][-slice_n:],
-        bars["close"][-slice_n:],
-        bars["turn"][-slice_n:],
-        (bars.get("tradestatus") or [1] * slice_n)[-slice_n:],
-    )
-    return hist if float(sum(hist)) > 0 else None
-
-
 def _feat_cell(feat: dict, key: str, digits: int = 2, scale: float = 1.0):
     val = feat.get(key)
     if val is None:
@@ -1007,137 +1113,165 @@ def _feat_cell(feat: dict, key: str, digits: int = 2, scale: float = 1.0):
     return round(float(val) * scale, digits)
 
 
+def _template_choices() -> tuple[list[str], dict[str, str]]:
+    labels: list[str] = []
+    by_label: dict[str, str] = {}
+    for key in ("yuandong", "chaosheng"):
+        spec = DEMOS[key]
+        label = f"{spec['title']} （{spec['start']} 至 {spec['end']}）"
+        labels.append(label)
+        by_label[label] = key
+    labels.append("自选")
+    return labels, by_label
+
+
+def _coerce_date(cur: Any, default: date) -> date:
+    if isinstance(cur, datetime):
+        return cur.date()
+    if isinstance(cur, date):
+        return cur
+    if isinstance(cur, str):
+        try:
+            return date.fromisoformat(cur.strip()[:10].replace("/", "-").replace(".", "-"))
+        except ValueError:
+            return default
+    return default
+
+
 def page_similar() -> None:
-    _page_header("相似选股", "模板历史窗 × 候选最近窗 · K 线召回 · 筹码/量/箱体打分 · 观察工具")
-    _note("圈定的日期只切模板（demo 波形和数据）。候选股一律取各自最近同样根数的交易日跟模板比形状，不看日期对齐。缺一项读数就跳过该项，不做硬过滤。形态近不等于可交易。")
-
-    preset = st.radio(
-        "打分偏好",
-        tuple(WEIGHT_PRESETS.keys()),
-        index=list(WEIGHT_PRESETS.keys()).index("偏筹码"),
-        horizontal=True,
-        key="similar_screen_preset",
-        help="偏筹码：筹码分布占一半。均衡：六组都有份。偏确认：末端放量和阳线位置更重。这三档是起点，不是标定结果。",
-    )
-    book = st.selectbox(
-        "测试 demo",
-        ("自选", "远东股份", "超声电子"),
-        key="similar_book_demo",
-        help="选中后填上册子里的模板代码和窗口。候选仍是各自最新一段。",
-    )
-    default_end = date.today()
-    default_start = default_end - pd.Timedelta(days=126).to_pytimedelta()
-    if "similar_scan_start" not in st.session_state:
-        st.session_state["similar_scan_start"] = default_start
-    if "similar_scan_end" not in st.session_state:
-        st.session_state["similar_scan_end"] = default_end
-    demo_key = {"远东股份": "yuandong", "超声电子": "chaosheng"}.get(book)
-    if demo_key and st.session_state.get("_similar_book_applied") != demo_key:
-        spec = DEMOS[demo_key]
-        st.session_state["similar_scan_start"] = date.fromisoformat(spec["start"])
-        st.session_state["similar_scan_end"] = date.fromisoformat(spec["end"])
-        st.session_state["similar_ref_q"] = spec["symbol"].split(".")[-1]
-        st.session_state["_similar_book_applied"] = demo_key
-    elif book == "自选":
-        st.session_state["_similar_book_applied"] = None
-    d1, d2, r1c2, r1c3, r1c5 = st.columns([1.15, 1.15, 0.9, 0.8, 0.7])
-    with d1:
-        mark_start = st.date_input("模板窗口起点", key="similar_scan_start")
-    with d2:
-        mark_end = st.date_input("模板窗口终点", key="similar_scan_end")
-    with r1c2:
-        recall_n = st.number_input(
-            "召回池", min_value=20, max_value=500, value=DEFAULT_SCREEN_RECALL,
-            step=50, key="similar_screen_recall",
-        )
-    with r1c3:
-        top_n = st.number_input("显示", min_value=5, max_value=80, value=40, step=5, key="similar_top_n")
-    with r1c5:
-        exclude_st = st.checkbox("排除 ST", value=True)
-    weights = WEIGHT_PRESETS[preset]
-    if mark_end < mark_start:
-        st.warning("窗口终点早于起点。")
-        return
-    st.caption("这段日期只切模板股：它自己那段历史就是 demo 波形。候选股取各自最近 N 个交易日（N = 模板根数，尾部＝最新完整交易日）。改条件后要点金色按钮才重新扫。")
-
-    bars, names, source_label, dropped_session = _similarity_universe()
-    if not bars:
-        st.info(f"暂无可用序列。{source_label or '缺源'}。缺则空，不编 OHLC。")
-        return
+    _page_header("相似选股", "选一个模板，看现在哪些股票走势接近。")
+    labels, by_label = _template_choices()
+    if "similar_book_demo" not in st.session_state:
+        st.session_state["similar_book_demo"] = "自选"
+    book = st.selectbox("模板", labels, key="similar_book_demo")
+    demo_key = by_label.get(book)
+    locked = demo_key is not None
+    bars, names, _source_label, dropped_session = _similarity_universe()
+    all_codes = sorted(bars) if bars else []
 
     def _label(code: str) -> str:
         name = names.get(code) or ""
         return f"{name} ({code})" if name else code
 
-    all_codes = sorted(bars.keys())
-    q = st.text_input("选模板股票（代码或名称）", placeholder="远东 或 600869", key="similar_ref_q")
-    qn = (q or "").strip().lower()
-    filtered = all_codes
-    if qn:
-        filtered = [
-            c for c in all_codes
-            if qn in c.lower() or qn in (names.get(c) or "").lower()
-        ]
-    if not filtered:
-        st.info("没有匹配的模板。空着搜索框则列出全部。")
-        return
-    default = next((c for c in ("sh.601899", "SSE:601899") if c in filtered), filtered[0])
-    ref = st.selectbox("参考标的", filtered, index=filtered.index(default), format_func=_label)
+    if locked and st.session_state.get("_similar_book_applied") != demo_key:
+        spec = DEMOS[demo_key]
+        st.session_state["similar_scan_start"] = date.fromisoformat(spec["start"])
+        st.session_state["similar_scan_end"] = date.fromisoformat(spec["end"])
+        if spec["symbol"] in all_codes:
+            st.session_state["similar_ref_pick"] = spec["symbol"]
+        st.session_state["_similar_book_applied"] = demo_key
+    elif not locked:
+        st.session_state["_similar_book_applied"] = None
+    for _date_key, _date_default in (
+        ("similar_scan_start", _cn_today() - timedelta(days=126)),
+        ("similar_scan_end", _cn_today()),
+    ):
+        fixed = _coerce_date(st.session_state.get(_date_key), _date_default)
+        if st.session_state.get(_date_key) != fixed:
+            st.session_state[_date_key] = fixed
+    pick_options = all_codes or ["—"]
+    if st.session_state.get("similar_ref_pick") not in pick_options:
+        fallback = DEMOS["yuandong"]["symbol"]
+        st.session_state["similar_ref_pick"] = fallback if fallback in pick_options else pick_options[0]
 
-    recent_start = (date.today() - timedelta(days=420)).isoformat()
+    with st.container(border=True):
+        left, right = st.columns([1.2, 1.25], gap="large")
+        with left:
+            ref_pick = st.selectbox(
+                "代码或名称",
+                pick_options,
+                format_func=_label,
+                key="similar_ref_pick",
+                disabled=locked or not all_codes,
+                filter_mode="fuzzy",
+                placeholder="输入代码或名称",
+            )
+            d1, d2 = st.columns(2)
+            with d1:
+                mark_start = st.date_input(
+                    "起始日期", key="similar_scan_start", disabled=locked,
+                )
+            with d2:
+                mark_end = st.date_input(
+                    "结束日期", key="similar_scan_end", disabled=locked,
+                )
+            clicked = st.button(
+                "查询相似股票", type="primary", key="similar_scan_btn", width="stretch",
+            )
+        with right:
+            st.markdown(
+                '<div class="opt-rule">自定义选项<span>（一般不用改）</span></div>',
+                unsafe_allow_html=True,
+            )
+            preset = st.radio(
+                "打分偏好",
+                tuple(WEIGHT_PRESETS.keys()),
+                index=list(WEIGHT_PRESETS.keys()).index("均衡"),
+                horizontal=True,
+                key="similar_screen_preset",
+            )
+            n1, n2, n3 = st.columns([1, 1, 1])
+            with n1:
+                recall_n = st.number_input(
+                    "召回池", min_value=20, max_value=500, value=DEFAULT_SCREEN_RECALL,
+                    step=50, key="similar_screen_recall",
+                )
+            with n2:
+                top_n = st.number_input("显示", min_value=5, max_value=80, value=40, step=5, key="similar_top_n")
+            with n3:
+                exclude_st = st.checkbox("排除 ST", value=True, key="similar_exclude_st")
+            preview = st.radio(
+                "模板预览", ("日 K", "筹码", "K + 筹码"),
+                horizontal=True, key="similar_tpl_view",
+            )
+    weights = WEIGHT_PRESETS[preset]
+    if not bars:
+        st.info("暂无行情。")
+        return
+    if mark_end < mark_start:
+        st.warning("结束日期不能早于起始日期。")
+        return
+    if locked:
+        ref = DEMOS[demo_key]["symbol"]
+    else:
+        ref = ref_pick
+        if ref not in bars:
+            st.caption("没有这只。")
+            return
+
+    recent_start = (_cn_today() - timedelta(days=420)).isoformat()
     scan_input = bars
     deep: dict = {}
-    if mark_start.isoformat() < recent_start:
+    if ref not in scan_input or mark_start.isoformat() < recent_start:
         deep = _ref_deep_history(ref, mark_start.isoformat())
         if deep.get(ref):
             scan_input = {**bars, ref: deep[ref]}
     built = build_scan_pool(scan_input, ref, mark_start.isoformat(), mark_end.isoformat())
     if built is None:
-        st.info(f"参考标的在 {mark_start}～{mark_end} 不足 10 根，换区间或换一只。")
+        st.caption("这段不足 10 个交易日。")
         return
     template_bars, eligible, slice_n = built
-    skipped = len(bars) - len(eligible)
     cand_end = max(
         (str((b.get("trade_date") or [""])[-1])[:10] for b in bars.values()), default=""
     )
 
-    preview = st.radio("模板预览", ("日 K", "筹码", "K + 筹码"), horizontal=True, key="similar_tpl_view")
     if preview in ("日 K", "K + 筹码"):
-        _sec("模板 · 日 K")
         _render_kline_panel(_ohlc_from_bars(template_bars, slice_n), _label(ref))
-        st.caption(f"模板窗口 {mark_start} → {mark_end}（{slice_n} 根）· demo 波形。候选按各自最近 {slice_n} 根比。")
     if preview in ("筹码", "K + 筹码"):
-        _sec("模板 · 筹码")
-        hist_ref = _chip_of(template_bars, slice_n)
-        if hist_ref is not None:
-            _render_chip_hist(hist_ref, _label(ref), title="模板窗口内本地 CYQ · 不复权")
-            st.caption("模板窗口内的本地 CYQ；候选筹码各自取最近窗。除权日附近会失真。")
+        snap_ref = _chip_snapshot(template_bars, slice_n)
+        if snap_ref is not None:
+            _render_last_chip(snap_ref, f"末日筹码 · {_label(ref)}", width=_CHART_W)
         else:
-            st.caption("无换手，模板筹码图关着。打分里缺的筹码读数会跳过，不把这只丢掉。")
-    tpl_stage = format_stage(describe_window(template_bars))
-    st.caption(f"模板读数 {tpl_stage}")
-
-    dropped_txt = f" · 去掉未齐的 {dropped_session}" if dropped_session else ""
-    st.caption(
-        f"{source_label} · 模板 {mark_start}→{mark_end} · {slice_n} 根"
-        f"{'（模板单独深取）' if deep else ''} · "
-        f"候选池 {len(eligible)} 只（各自最近 {slice_n} 根，尾部到 {cand_end or '—'}）"
-        f"{dropped_txt} · 丢掉短序列 {skipped}"
-    )
+            st.caption("这段没有换手，筹码图先不画。")
+    st.caption(f"模板 {slice_n} 根 · {mark_start} 至 {mark_end}")
 
     sig = (
         ref, mark_start.isoformat(), mark_end.isoformat(),
         int(recall_n), preset, bool(exclude_st),
     )
-    st.markdown(
-        '<div class="similar-cta"><div class="similar-cta-kicker">SCAN · 相似选股</div>'
-        '<p class="similar-cta-sub">先按收盘波形召回（默认 500），再按筹码、做盘痕迹、量、箱体、确认、均线到模板的距离打分。点下面按钮开始。</p></div>',
-        unsafe_allow_html=True,
-    )
-    clicked = st.button("相似选股（波形召回 + 特征距离）", type="primary", width="stretch", key="similar_scan_btn")
     if clicked:
         t0 = time.perf_counter()
-        with st.spinner(f"召回 {len(eligible)} 只候选（模板 {slice_n} 根 vs 各自最近 {slice_n} 根）…"):
+        with st.spinner("正在查询…"):
             ranked, info = screen_similar(
                 eligible[ref],
                 eligible,
@@ -1166,6 +1300,7 @@ def page_similar() -> None:
             "exclude_st": bool(exclude_st),
             "elapsed_s": round(elapsed, 2),
             "template_stage": info["template_stage"],
+            "template_features": info["template_features"],
             "top20": [m.code for m in ranked[:20]],
             "sz.300806": sidike,
         }
@@ -1180,42 +1315,58 @@ def page_similar() -> None:
     state = st.session_state.get("similar_scan")
     if not state:
         return
-    ranked, used_w = state["ranked"], state["used_w"]
+    ranked = state["ranked"]
     slice_n = state["slice_n"]
     view_bars = state.get("bars") or eligible
     view_ref = state.get("ref") or ref
     pl = state.get("payload") or {}
     stale = state.get("sig") != sig
     if pl:
-        wtxt = " ".join(f"{k}{v:.0%}" for k, v in (pl.get("weights") or {}).items())
         msg = (
-            f"模板 {pl.get('ref_name') or pl.get('ref')} {pl.get('start')} → {pl.get('end')}（{pl.get('bars')} 根）· "
-            f"候选取各自最近 {pl.get('bars')} 根到 {pl.get('cand_end') or '—'} · "
-            f"召回 {len(ranked)} · 显示 {int(top_n)} · {pl.get('preset') or ''} {wtxt} · {pl.get('elapsed_s')}s"
+            f"{pl.get('ref_name') or pl.get('ref')} {pl.get('start')} 至 {pl.get('end')}"
+            f" · 召回 {len(ranked)} 只 · {pl.get('preset') or ''} · {pl.get('elapsed_s')} 秒"
         )
         if stale:
-            st.warning(msg + "。当前选项已改，这是上次结果；要按新条件请再点金色按钮。")
+            st.warning("条件已改，这是上次的结果。再点查询。")
         else:
-            st.info(msg + "。")
-    hit_log = (pl or {}).get("sz.300806")
-    if hit_log:
-        st.caption(f"日志：斯迪克在本次召回池，特征距离第 {hit_log.get('rank')}，K 线召回第 {hit_log.get('recall')}。")
+            st.caption(msg)
     if not ranked:
-        st.caption("无有效候选（短序列已丢掉）")
+        st.caption("没有可对照的股票。")
         return
 
     shown = ranked[: int(top_n)]
-    wtxt = " / ".join(f"{k} {v:.0%}" for k, v in used_w.items())
+    asof = (pl or {}).get("cand_end") or ""
+    industry, index_by_day = _market_frame()
+    sectors = sector_moves(bars, industry, asof) if asof else {}
+    index_day = index_by_day.get(asof, {})
+    contexts: dict[str, dict] = {}
+
+    def _ctx(code: str) -> dict:
+        cached = contexts.get(code)
+        if cached is None:
+            cached = name_context(
+                code, bars.get(code) or {}, industry, sectors, index_day, asof,
+            )
+            contexts[code] = cached
+        return cached
+
     rows = []
     for i, m in enumerate(shown, start=1):
         delta = m.delta
         feat = m.features or {}
         under = feat.get("all_under")
+        ctx = _ctx(m.code)
         rows.append({
             "排序": i,
             "召回": m.recall_rank,
             "代码": m.code,
             "名称": names.get(m.code, ""),
+            "属性": ctx.get("board") or "—",
+            "行业": ctx.get("industry_cut") or "—",
+            "流通市值": cap_text(ctx.get("float_yi")),
+            "体量": ctx.get("cap_band") or "—",
+            "对上证": ctx.get("vs_index") or "—",
+            "对板块": ctx.get("vs_sector") or "—",
             "分数": round(m.score, 3),
             "末峰": _feat_cell(feat, "end_n_peaks", 0),
             "峰日峰": _feat_cell(feat, "peak_n_peaks", 0),
@@ -1225,7 +1376,7 @@ def page_similar() -> None:
             "前峰量比": _feat_cell(feat, "vol_climax", 2),
             "箱高": _feat_cell(feat, "box_width", 1, 100),
             "震荡": _feat_cell(feat, "chop", 1),
-            "四线": None if under is None else ("全在价格下" if under == 1.0 else "未全亏"),
+            "四线": None if under is None else ("全在价格下" if under == 1.0 else "未全在下"),
             "Δ": None if delta is None else (f"+{delta}" if delta > 0 else str(delta)),
         })
     df = pd.DataFrame(rows)
@@ -1249,36 +1400,7 @@ def page_similar() -> None:
         styled = _style_base(df.style.hide(axis="index"))
         _show(styled, width="stretch")
         pick = st.selectbox("对照个股", pick_codes, format_func=_label)
-    st.caption(
-        f"点表选一只做 1v1。召回 {len(ranked)} · 显示 {len(shown)} · 权重 {wtxt}。"
-        "分数越小越接近模板。离散、箱高是相对收盘的百分比。"
-        "Δ = 召回名次 − 当前名次，正数=特征把这只往前抬。"
-        "观察用，不是选股结论。"
-        + (" 已排除 ST。" if exclude_st else "")
-    )
-    find_q = st.text_input("在本次结果中找（不会换模板）", placeholder="300806 或 斯迪克", key="similar_find")
-    fq = (find_q or "").strip().lower()
-    if fq:
-        fq_code = fq.split(".", 1)[-1] if fq[:3] in ("sz.", "sh.", "bj.") else fq
-        hit_i, hit_m = None, None
-        for i, m in enumerate(ranked, start=1):
-            name = (names.get(m.code) or "").lower()
-            tail = m.code.split(".")[-1]
-            if fq in m.code.lower() or fq_code == tail or fq in name or fq_code in name:
-                hit_i, hit_m = i, m
-                break
-        if hit_m is None:
-            st.warning(
-                f"「{find_q}」不在本次召回 {len(ranked)} 只里。"
-                f"肉眼像不代表收盘 DTW 进前 {int(recall_n)}。加大召回池后再扫，或核对模板窗口是否取到了目标那段。"
-            )
-        else:
-            pick = hit_m.code
-            extra = "已在表内。" if hit_i <= int(top_n) else f"特征距离第 {hit_i}，当前表只显示前 {int(top_n)}，对照已切到这只。"
-            st.info(
-                f"{_label(hit_m.code)} · K 线召回第 {hit_m.recall_rank} · 特征距离第 {hit_i} · "
-                f"分数 {hit_m.score:.3f} · K DTW {hit_m.d_kline:.2f}。{extra}"
-            )
+    st.caption("点一行看对照。分数越小越接近模板。流通市值、对上证、对板块不参与排序。")
 
     m_pick = next((m for m in ranked if m.code == pick), shown[0])
     pick = m_pick.code
@@ -1304,13 +1426,6 @@ def page_similar() -> None:
         ],
         cols=5,
     )
-    st.caption(m_pick.stage)
-    group_txt = " · ".join(
-        f"{k} {'—' if v is None else f'{v:.2f}'}" for k, v in (m_pick.groups or {}).items()
-    )
-    if group_txt:
-        st.caption(f"组距离（越小越近）{group_txt}")
-    st.caption("两根日 K 各用自己的价格轴，不把 10 元和 1000 元叠到双 Y 上。波形对比走下面的归一化叠线；换手 % 已经同单位，直接叠。")
     _render_kline_panel(
         _ohlc_from_bars(view_bars.get(view_ref, {}), slice_n),
         f"模板 · {_label(view_ref)} · {pl.get('start') or '?'}→{pl.get('end') or '?'}",
@@ -1319,27 +1434,36 @@ def page_similar() -> None:
         _ohlc_from_bars(view_bars.get(pick, {}), slice_n),
         f"对照 · {_label(pick)} · 最近 {slice_n} 根（到 {pl.get('cand_end') or '—'}）",
     )
-    st.caption("模板是自己那段历史窗（demo），对照是它自己最近一段。横轴是窗口内第 N 个交易日，两边日期不对齐。")
+    st.caption("横轴是窗口里第几个交易日，两边的日期不对齐。")
     _overlay_pair(
         view_bars, view_ref, pick, names, "close", slice_n,
-        "归一化收盘（形状）", "0–1", True,
+        "收盘形状", "0–1", True,
     )
     if (view_bars.get(view_ref) or {}).get("turn") and (view_bars.get(pick) or {}).get("turn"):
         _overlay_pair(
             view_bars, view_ref, pick, names, "turn", slice_n,
-            "换手 %（同单位，不归一化）", "换手 %", False,
+            "换手", "换手 %", False,
         )
     else:
         _overlay_pair(
             view_bars, view_ref, pick, names, "volume", slice_n,
-            "归一化成交量（无换手时的降级）", "0–1", True,
+            "成交量", "0–1", True,
         )
-    h_ref = _chip_of(view_bars.get(view_ref, {}), slice_n)
-    h_pick = _chip_of(view_bars.get(pick, {}), slice_n)
-    if h_ref is not None and h_pick is not None:
-        _render_chip_hist(h_ref, _label(ref), h_pick, _label(pick), title="筹码 1v1 · 相对价轴")
-    else:
-        st.caption("无换手，不做筹码对照。")
+    _sec("末日筹码")
+    h_ref = _chip_snapshot(view_bars.get(view_ref, {}), slice_n)
+    h_pick = _chip_snapshot(view_bars.get(pick, {}), slice_n)
+    chip_l, chip_r = st.columns(2)
+    with chip_l:
+        if h_ref is not None:
+            _render_last_chip(h_ref, f"模板 · {_label(view_ref)}")
+        else:
+            st.caption(f"模板 {_label(view_ref)} 无换手，没有末日筹码。")
+    with chip_r:
+        if h_pick is not None:
+            _render_last_chip(h_pick, f"对照 · {_label(pick)}")
+        else:
+            st.caption(f"对照 {_label(pick)} 无换手，没有末日筹码。")
+    st.caption("红柱是收盘价及以下的筹码（获利），金色线是收盘价。")
 
 def _kol_handle(acc: Any) -> str:
     return str(acc or "").lstrip("@").strip()

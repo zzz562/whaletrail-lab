@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from whaletrail.data.baostock_source import to_baostock_code
+from whaletrail.context import cap_text, commentary, load_index_moves, name_context, sector_moves
 from whaletrail.screen import DEMOS, WEIGHT_PRESETS, screen_similar, trim_partial_session, window_brief
 from whaletrail.similarity import build_scan_pool
 from whaletrail.storage.repository import Repository
@@ -73,6 +74,8 @@ def main() -> None:
     recent_start = (date.today() - timedelta(days=420)).isoformat()
     repo = Repository(args.db)
     names = repo.universe_names()
+    industry = repo.industry_map()
+    index_moves = load_index_moves(repo.conn)
     fetch_from = recent_start if not start else min(recent_start, start)
     bars = repo.daily_bars(start=fetch_from)
     repo.close()
@@ -126,22 +129,42 @@ def main() -> None:
     print(f"模板 {info['template_stage']}")
     wtxt = " ".join(f"{k}={v:.2f}" for k, v in info["weights"].items())
     print(f"权重 {wtxt}")
+    print("属性、流通市值、对上证、对板块不进分数。体量：<30 偏小，30–100 合适，100–300 偏大，300–1000 大，≥1000 超大。")
+    sectors = sector_moves(bars, industry, cand_end) if cand_end else {}
+    index_day = index_moves.get(cand_end, {})
+
+    def _ctx(code: str) -> dict:
+        return name_context(code, bars.get(code) or {}, industry, sectors, index_day, cand_end)
+
     print(
-        f"{'序':<4}{'召回':<6}{'代码':<12}{'名称':<10}{'分数':>8}"
-        f"{'末峰':>6}{'峰日':>6}{'谷日':>6}{'偏度':>8}{'离散':>8}{'量比':>8}{'震荡':>8}"
+        f"{'序':<4}{'召回':<6}{'代码':<12}{'名称':<10}{'属性':<6}{'体量':<6}{'市值':>8}"
+        f"{'对上证':<6}{'对板块':<6}{'分数':>8}"
+        f"{'末峰':>6}{'量比':>8}"
     )
-    print("-" * 96)
+    print("-" * 108)
+    shown_ctx = []
     for i, hit in enumerate(shown, start=1):
         f = hit.features
-        def cell(key, nd=1):
-            val = f.get(key)
+        ctx = _ctx(hit.code)
+        shown_ctx.append(ctx)
+
+        def cell(key, nd=1, feat=f):
+            val = feat.get(key)
             return "—" if val is None else f"{val:.{nd}f}"
+
         print(
             f"{i:<4}{hit.recall_rank:<6}{hit.code:<12}{(names.get(hit.code) or '')[:8]:<10}"
-            f"{hit.score:8.3f}{cell('end_n_peaks', 0):>6}{cell('peak_n_peaks', 0):>6}"
-            f"{cell('trough_n_peaks', 0):>6}{cell('end_skew', 2):>8}{cell('end_std', 2):>8}"
-            f"{cell('vol_climax', 2):>8}{cell('chop', 1):>8}"
+            f"{(ctx.get('board') or '—'):<6}{(ctx.get('cap_band') or '—'):<6}"
+            f"{cap_text(ctx.get('float_yi')):>8}{(ctx.get('vs_index') or '—'):<6}"
+            f"{(ctx.get('vs_sector') or '—'):<6}{hit.score:8.3f}"
+            f"{cell('end_n_peaks', 0):>6}{cell('vol_climax', 2):>8}"
         )
+    print("\n点评（不改名次）")
+    tfeat = info["template_features"]
+    for i, (hit, ctx) in enumerate(zip(shown, shown_ctx), start=1):
+        title = names.get(hit.code) or hit.code
+        print(f"\n{i}. {title} {hit.code}")
+        print(commentary(hit.features, tfeat, hit.recall_rank, hit.d_kline, hit.close_corr, ctx))
     if args.json_path:
         payload = {
             "ref": code,
@@ -159,6 +182,7 @@ def main() -> None:
             "template_features": _jsonable(info["template_features"]),
             "template_brief": _jsonable(brief),
             "elapsed_s": round(elapsed, 2),
+            "index_day": _jsonable(index_day),
             "hits": [
                 {
                     "rank": i,
@@ -171,6 +195,11 @@ def main() -> None:
                     "stage": h.stage,
                     "groups": _jsonable(h.groups),
                     "features": _jsonable(h.features),
+                    "context": _jsonable(_ctx(h.code)),
+                    "comment": commentary(
+                        h.features, info["template_features"], h.recall_rank,
+                        h.d_kline, h.close_corr, _ctx(h.code),
+                    ),
                 }
                 for i, h in enumerate(hits, start=1)
             ],

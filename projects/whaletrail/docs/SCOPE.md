@@ -78,6 +78,8 @@ yfinance ──► ParquetCache ──► Backtester ──► results/*.json
 26. 看板默认相似选股，预发与生产分进程（2026-09-28）：公网 `/` 打开相似选股，顶栏分段按钮去掉。`?page=gold|ashare|similar|kol|genzhuang` 仍在同一地址打开对应页，页内没有去其他页的入口。生产跑 `~/Projects/whaletrail-prod`（同一仓库的 worktree，停在已发布 SHA，`server.fileWatcherType=none`，`:8766`，nginx `:80`）。预发跑 `~/Projects/whaletrail-lab`（`:8768`，`baseUrlPath=stage`，公网 `/stage/`）。两进程读 lab 的 `results/` 与 `whaletrail.db`（`WT_DATA_ROOT`）。预发扫描日志 `logs/similar-scan.stage.log`。Git 仍只有 `main`；`prod` 只是指向已发布提交的书签，不在上面开发。代码：`scripts/dashboard.py`、`scripts/ai.whaletrail-dashboard.plist`、`scripts/ai.whaletrail-dashboard-stage.plist`。
 27. 相似选股预发改为特征距离（2026-09-29）：召回仍是收盘 DTW，默认池 500。池内不再用整段换手 L1 + 筹码 EMD 分位，改为到模板的分组距离：筹码（末日 / 该股自己的 A 峰日 / 谷日的峰数、离散、偏度、收盘下方面积）、做盘痕迹（跌幅、速度、连阴、修复）、量（相对此前放量峰、20 日均量、换手）、箱体（宽度、Choppiness、效率比、箱内位置）、末端确认（日收益、收盘在当日高低的位置）、均线（相对 MA7/30/55/120；四条均线都在价格上方是组内的一个数，不是剔除条件）。缺一项就跳过该项，不做硬与。A 峰只说明这只股票此前有过急跌痕迹，不跟模板对齐日历。三档权重偏筹码 / 均衡 / 偏确认是起点，不是标定。旧 `retrieve_rank` 与 `scripts/ashare-similar.py` 保留。新入口 `screen_similar`（`whaletrail/screen.py`）和 `scripts/similar-screen.py`。册子 `docs/SIMILAR_DEMOS.md`。最新交易日若只到了全市场的八成以下，进打分前丢掉。仍是观察，不扩两本账，不拉概念板块，这一版只上预发。
 
+28. 相似选股表上增加背景，不进排序（2026-09-29）：候选窗口最后一天相对上证、相对该股证监会行业（等权，停牌和 ST 除外）记顺涨/顺跌/逆涨/逆跌/平/独立/未跟；涨跌不到 0.1 个百分点视为没动。属性按代码分沪主板、深主板、创业板、科创板、北交所。流通市值由收盘、成交量和换手推出来（库里没有总市值），分档：30 亿以下偏小，30–100 亿合适，100–300 亿偏大，300–1000 亿大，1000 亿及以上超大。这几列和 1v1 点评不进入 `screen_similar` 的分数。点评顺序固定为波形、近期走势、阳线与放量、均线、筹码、当天顺逆，最后一句才判断近期有没有沿蓝本那段走出来的可能；体量写在这句里，顺逆只陈述。科创50仍不在库里。仍是观察，不扩两本账。代码：`whaletrail/context.py`、`scripts/dashboard.py`、`scripts/similar-screen.py`。话术见 `docs/SIMILAR_DEMOS.md`。
+
 ## 决策记录规范
 
 - 每个重大决策写一条，带日期；一句话说清"定了什么、为什么、影响哪里"。
