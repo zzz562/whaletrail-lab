@@ -38,8 +38,8 @@ def _fail_if(app: AppTest) -> None:
 def page_top(symbol: str, start: str | None, end: str | None, top: int) -> list[str]:
     """Top rows as the page produced them, read back from the scan log.
 
-    The page opens on the saved 远东 template and 均衡. This drives 自选 plus
-    偏筹码 so the comparison stays on the CLI's preset.
+    The page opens on 自选 and 均衡. This check pins both sides to 偏筹码
+    so it does not follow the CLI default.
     """
     before = len(LOG_PATH.read_text(encoding="utf-8").splitlines()) if LOG_PATH.exists() else 0
     app = AppTest.from_file(str(ROOT / "scripts" / "dashboard.py"), default_timeout=900)

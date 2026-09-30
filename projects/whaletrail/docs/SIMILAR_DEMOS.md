@@ -6,9 +6,21 @@
 
 ## 怎么跑
 
-预发：<http://139.224.244.214/stage/?page=similar>
+Bot 直接用命令行，不用再装 Python 包。仓库里的 `.venv` 和日 K 库都在 Mac mini 上。工作目录：
 
-页上「测试 demo」选远东股份或超声电子。召回池默认 500，打分偏好默认偏筹码。改完要点金色按钮。
+`~/Projects/whaletrail-lab/projects/whaletrail`
+
+库是这个目录下的 `results/whaletrail.db`。观察机上没有这份库，选股不要在那边跑。
+
+```bash
+.venv/bin/python scripts/similar-screen.py --demo yuandong --recall 500 --top 30
+.venv/bin/python scripts/similar-screen.py --demo chaosheng --recall 500 --top 30
+.venv/bin/python scripts/similar-screen.py --symbol sz.000823 --start 2026-03-07 --end 2026-09-07 --json /tmp/chaosheng.json
+```
+
+不写 `--preset` 就是均衡，和公网页面默认一致。要换档再加 `--preset 偏筹码` 或 `--preset 偏确认`。召回池默认 500。标准输出是排名表，以及每只按下面话术打的点评。`--json` 把召回池里每一只的分组距离和读数写到文件。这是观察，不是买卖清单。
+
+同一套函数可以在这个 venv 里调用。`bars` 得自己从库里取出，并先过 `trim_partial_session`。命令行已经做完这步。
 
 ```python
 from whaletrail.screen import DEMOS, WEIGHT_PRESETS, screen_similar
@@ -17,21 +29,15 @@ from whaletrail.similarity import build_scan_pool
 spec = DEMOS["chaosheng"]  # 或 "yuandong"
 template, pool, n = build_scan_pool(bars, spec["symbol"], spec["start"], spec["end"])
 hits, info = screen_similar(
-    template, pool, recall_n=500, weights=WEIGHT_PRESETS["偏筹码"],
+    template, pool, recall_n=500, weights=WEIGHT_PRESETS["均衡"],
 )
 # hits[0].score 越小越近；hits[0].features 是那只的读数
 # info["template_stage"] / info["template_features"] 是模板自己的读数
 ```
 
-`bars` 是 `Repository.daily_bars` 的全市场日 K，并且已经过 `trim_partial_session`。CLI 把这件事包好了。在 `projects/whaletrail` 下：
+页面：<http://139.224.244.214/?page=similar>。模板默认「自选」，已存的是远东股份和超声电子。打分偏好默认均衡。
 
-```bash
-.venv/bin/python scripts/similar-screen.py --demo yuandong --recall 500 --top 30
-.venv/bin/python scripts/similar-screen.py --demo chaosheng --recall 500 --top 30
-.venv/bin/python scripts/similar-screen.py --symbol sz.000823 --start 2026-03-07 --end 2026-09-07 --json /tmp/chaosheng.json
-```
-
-`--json` 写出召回池里每一只的分组距离和读数。`--preset` 取偏筹码、均衡、偏确认。旧命令 `scripts/ashare-similar.py` 仍是整段换手 L1 加筹码 EMD。
+旧命令 `scripts/ashare-similar.py` 仍是整段换手 L1 加筹码 EMD，不走上面这套默认。
 
 三档权重是起点，留着看哪一组该加重，不是用这 500 只标定出来的。
 
@@ -72,6 +78,8 @@ hits, info = screen_similar(
 5. 筹码。末日峰数、主峰在收盘上还是下、获利、离散，加上峰日和谷日的获利。峰数要和蓝本一样，末日获利相差不超过 20 个百分点，主峰相对收盘相差不超过 8 个百分点，谷日获利与蓝本相差不超过 10 个百分点，才算同一阶段。
 6. 当天背景。属性，以及相对上证、相对自己行业的方向。这句不参加下一句的判断。
 7. 判断。波形至少在中部，筹码同一阶段，末日收阳并且量能靠近、收在当日区间 0.60 以上，均线同侧，修复还没有明显离开蓝本：这几条齐了，才写近期有沿这段结构走出来的可能。波形在后部而其余齐了，写形状这一关还不齐。均线同侧但只齐了筹码或末端其中一段，写读数不齐。筹码已经同侧、末端或均线没叠上，写筹码靠近、近期按这段去看拉升不成立。只有末端齐了，写末端有阳线放量、其余还没到那一侧。四条均线都在价格上方，或者这几侧都对不上，也写不成立。体量接在这句后面。合适档照写几十亿。偏大写过了一百亿、幅度会更钝。大档和超大档把「走出来的可能」改成往下看。
+
+下面两段榜是 2026-09-28、偏筹码跑出来的，留着对照指纹。现在不带 `--preset` 再跑，用的是均衡，名次会不同。
 
 ## 远东股份 sh.600869
 

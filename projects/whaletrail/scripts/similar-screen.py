@@ -51,8 +51,8 @@ def main() -> None:
     parser.add_argument(
         "--preset",
         choices=tuple(WEIGHT_PRESETS),
-        default="偏筹码",
-        help="Feature-group weights (default 偏筹码)",
+        default="均衡",
+        help="Feature-group weights (default 均衡)",
     )
     parser.add_argument("--include-st", action="store_true")
     parser.add_argument("--json", dest="json_path", help="Write the full hit list to this path")

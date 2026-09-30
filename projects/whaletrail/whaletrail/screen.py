@@ -457,11 +457,11 @@ def _scale(values: list[float | None]) -> float:
 
 
 def _normalize_weights(weights: Mapping[str, float] | None) -> dict[str, float]:
-    src = dict(WEIGHT_PRESETS["偏筹码"] if weights is None else weights)
+    src = dict(WEIGHT_PRESETS["均衡"] if weights is None else weights)
     active = {k: float(v) for k, v in src.items() if k in _GROUPS and float(v) > 0}
     total = sum(active.values())
     if total <= 0:
-        active = dict(WEIGHT_PRESETS["偏筹码"])
+        active = dict(WEIGHT_PRESETS["均衡"])
         total = sum(active.values())
     return {k: v / total for k, v in active.items()}
 
