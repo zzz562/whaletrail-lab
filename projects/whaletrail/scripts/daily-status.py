@@ -84,7 +84,7 @@ def collect(db: str) -> tuple[list[str], list[str], list[str]]:
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     first = lines[0] if lines else ""
     if rc == 0:
-        ok.append(first.split("OK：", 1)[-1].replace(" | ", " · "))
+        ok.append(first.split("OK：", 1)[-1].replace(" | ", " · ").replace("• ", ""))
     else:
         warn.append((first or "体检脚本异常").replace("⚠️ ", ""))
         warn.extend("   " + ln.lstrip("• ").strip() for ln in lines[1:4])
