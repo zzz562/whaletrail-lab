@@ -51,6 +51,8 @@ baostock  ─► BaostockSource ─► daily_kline / index_kline / ashare_univer
 | 板块/指数 配置表（成分+权重） | 东财 datacenter 报表 / 中证官网 / 国证官网 | `board_members` 快照表。东财 push2 clist 端点按源 IP 限流，故走 datacenter 报表（1,031 个板块）。中证权重完整可复算；国证仅前 10 名权重，只能用成分表。点位与轮动本地用 `daily_kline` 算，不取第三方板块指数点位 |
 | paper-live 5m 信号 | yfinance | 实时扫描仍走 yfinance（`intraday.fetch_bars`，不写缓存） |
 
+资产清单、刷新频率、落库位置与当前缺口：见 `docs/DATA_INVENTORY.md`。
+
 入口：`whaletrail/data/layer.py` 的 `DataLayer`。快照源的 yfinance fallback 是待办（需 tv/yahoo 符号映射）。
 
 A 股低频率 paper 入口：`scripts/ashare-paper.py`（SMA 20/50 昨收信号 + 成本/涨跌停/T+1 模型 + 跟庄量价代理，状态存 `results/ashare_paper_state.json`）。

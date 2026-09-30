@@ -108,12 +108,12 @@ openclaw cron run whaletrail-ashare      # 手动触发 A 股 paper
 
 Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，脚本会自动从缺口日重拉。
 
-系统 crontab（mini）每工作日 16:30 / 20:00 两班例行增量抓取（全市场日 K + 静态表 + `index_kline` 基准指数），日志 `logs/fetch-baostock.log`；21:45 再跑一次完整性体检（`--daily`，无论好坏都推一条 Telegram 心跳）。20:00 班兜底 baostock 当日 EOD 发布晚于 16:30 的情况：
+系统 crontab（mini）每工作日 16:30 / 20:00 两班例行增量抓取（全市场日 K + 静态表 + `index_kline` 基准指数），日志 `logs/fetch-baostock.log`；21:45 跑每日数据状态（`scripts/daily-status.py`，内部先调体检脚本判定，无论好坏都推一条 Telegram）。资产与调度的完整清单见 `docs/DATA_INVENTORY.md`。20:00 班兜底 baostock 当日 EOD 发布晚于 16:30 的情况：
 
 ```cron
 30 16 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/fetch-baostock-universe.py >> logs/fetch-baostock.log 2>&1
 0 20 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/fetch-baostock-universe.py >> logs/fetch-baostock.log 2>&1
-45 21 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/check-ashare-data.py --daily >> logs/check-ashare-data.log 2>&1
+45 21 * * 1-5 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/daily-status.py >> logs/daily-status.log 2>&1
 ```
 
 抓取脚本的三道防线（2026-09-29 加，起因是 9-23 那班撞上 baostock 半关连接后空转 6 天）：
@@ -127,7 +127,7 @@ Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，�
 
 告警经 `whaletrail/reporting/telegram.py` 发送：token 取 `TG_BOT_TOKEN`/`TG_CHAT_ID`，缺省读 `~/.config/whaletrail/telegram.env`（600，git 之外），依次尝试环境代理 → 直连 → `127.0.0.1:7892`。体检口径：最近 3 个交易日（深交所日历）在 `daily_kline` 覆盖 ≥95% 上市名单、`index_kline` 8 条基准齐全，不达标推送并 exit 1。
 
-Telegram 每天推什么（工作日 21:45，`--daily`）：
+Telegram 每天推什么（工作日 21:45 `daily-status.py`，A股判定部分长这样）：
 
 | 情况 | 消息 |
 |------|------|
@@ -135,7 +135,27 @@ Telegram 每天推什么（工作日 21:45，`--daily`）：
 | 交易日、缺数 | `⚠️ A股数据不完整` + 具体哪个交易日少了多少 + 最近写入日期 + 排查提示（exit 1） |
 | 非交易日（节假日/调休） | `· 今日休市（10-01 非交易日）• 最近交易日 09-30 日线与基准指数完整` |
 
-另外抓取脚本自己也会推：单只失败超 300 只、基准指数有失败、超 90 分钟预算被截断、或硬失败（登录/静态表/写库异常）时各推一条。周末不推体检（`1-5`），需要一周七天都推就改 crontab。
+`daily-status.py` 发的是**一条汇总**，除 A股判定外还带：配置表快照与成分数、黄金/美股日线缓存天数（超 3 天标为需处理）、watchlist 快照时间、五个常驻服务的加载情况、最近一班抓取的结果（从 `logs/fetch-baostock.log` 的带时间戳汇总行里取）。有需处理项时 exit 1，全绿 exit 0。
+
+例子：
+
+```
+📊 WhaleTrail 每日数据状态（09-30 21:45）
+
+需处理 1 项：
+• 黄金/美股日线 GLD 16 天前 · SPY 16 天前（日报任务已不在，需手动或重排）
+
+正常：
+• ✅ A股入库正常（09-30 21:45） · 最近 3 个交易日日线完整：09-28 → 09-30（5224 只上市） · 基准指数 8/8 齐全 · 最近写入 daily_kline 2026-09-30 / index_kline 2026-09-30
+• 静态表 行业 2026-09-30 · 上市 5224 只
+• 配置表 1042 个板块/指数 · 104019 条成分 · 快照 2026-09-30
+• watchlist 快照 2026-09-30 15:30
+• 常驻服务 5/5 在飞
+最近班次：
+  班次 2026-09-30 20:05 · 完成：5224 只，写入 5224 行（其中补字段 0 只）· 单只失败 0 只 · 最新 2026-09-30
+```
+
+另外抓取脚本自己也会推：单只失败超 300 只、基准指数有失败、超 90 分钟预算被截断、或硬失败（登录/静态表/写库异常）时各推一条。体检脚本 `check-ashare-data.py` 仍可单独跑（`--daily` 时它自己也推心跳），`daily-status.py` 用的是它的 `--no-alert` 判定。周末不推（cron `1-5`），需要一周七天都推就改 crontab。
 
 手动补数/体检：
 
