@@ -29,9 +29,9 @@ from whaletrail.metrics.performance import calculate_metrics, compute_trade_pnl
 from whaletrail.storage.repository import Repository
 from whaletrail.strategy.registry import get_strategy_class
 
-# Proxy config: WT_PROXY_URL → HTTPS_PROXY → default (Mac mini Clash).
+# Proxy config: WT_PROXY_URL → HTTPS_PROXY → default (Mac mini BoostNet).
 # See docs/ENVIRONMENT.md "配置项（环境变量）".
-PROXY = os.environ.get("WT_PROXY_URL") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7890"
+PROXY = os.environ.get("WT_PROXY_URL") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7892"
 os.environ.setdefault("HTTPS_PROXY", PROXY)
 os.environ.setdefault("HTTP_PROXY", PROXY)
 

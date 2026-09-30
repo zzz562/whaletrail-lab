@@ -125,7 +125,7 @@ Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，�
 
 注意 baostock 同一时刻只认一个会话：两个进程同时跑（手动 + cron，或两次手动）会互相踢下线，报 `10001001 用户未登录`，症状是后半段标的静默失败（2026-09-29 补 2018 历史时踩到，1055 只只补了 685 只）。锁只挡 cron 之间，手动补数前先确认没有班次在跑。
 
-告警经 `whaletrail/reporting/telegram.py` 发送：token 取 `TG_BOT_TOKEN`/`TG_CHAT_ID`，缺省读 `~/.config/whaletrail/telegram.env`（600，git 之外），依次尝试环境代理 → 直连 → `127.0.0.1:7890`。体检口径：最近 3 个交易日（深交所日历）在 `daily_kline` 覆盖 ≥95% 上市名单、`index_kline` 8 条基准齐全，不达标推送并 exit 1。
+告警经 `whaletrail/reporting/telegram.py` 发送：token 取 `TG_BOT_TOKEN`/`TG_CHAT_ID`，缺省读 `~/.config/whaletrail/telegram.env`（600，git 之外），依次尝试环境代理 → 直连 → `127.0.0.1:7892`。体检口径：最近 3 个交易日（深交所日历）在 `daily_kline` 覆盖 ≥95% 上市名单、`index_kline` 8 条基准齐全，不达标推送并 exit 1。
 
 手动补数/体检：
 

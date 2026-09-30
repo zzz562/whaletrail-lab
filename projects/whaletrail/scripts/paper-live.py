@@ -63,7 +63,7 @@ TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "5102138680")
 # feeds the dashboard's gold paper page.  Re-enable with WT_TG_PUSH=1.
 PUSH_ENABLED = os.environ.get("WT_TG_PUSH", "1").strip().lower() not in {"0", "false", "no"}
 # Proxy config: WT_PROXY_URL → HTTPS_PROXY → default. See docs/ENVIRONMENT.md.
-PROXY = os.environ.get("WT_PROXY_URL") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7890"
+PROXY = os.environ.get("WT_PROXY_URL") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7892"
 
 os.environ.setdefault("HTTPS_PROXY", PROXY)
 os.environ.setdefault("HTTP_PROXY", PROXY)

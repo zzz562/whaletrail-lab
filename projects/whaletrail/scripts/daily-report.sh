@@ -13,7 +13,7 @@ END="${4:-$(date +%Y-%m-%d)}"
 CASH="${5:-100000}"
 
 # Proxy config: WT_PROXY_URL → HTTPS_PROXY → default. See docs/ENVIRONMENT.md.
-PROXY="${WT_PROXY_URL:-${HTTPS_PROXY:-http://127.0.0.1:7890}}"
+PROXY="${WT_PROXY_URL:-${HTTPS_PROXY:-http://127.0.0.1:7892}}"
 if curl -s --connect-timeout 2 --max-time 3 -x "$PROXY" https://www.google.com > /dev/null 2>&1; then
     export HTTPS_PROXY="$PROXY"
 else

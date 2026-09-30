@@ -32,7 +32,7 @@ cd ~/github_code/whaletrail-lab/projects/whaletrail  # MacBook
 .venv/bin/pip install -r requirements.txt
 
 # 拉数据（需要代理时，见 docs/ENVIRONMENT.md）
-export WT_PROXY_URL=http://127.0.0.1:7890   # 或 HTTPS_PROXY
+export WT_PROXY_URL=http://127.0.0.1:7892   # 或 HTTPS_PROXY
 
 # 黄金主回测
 .venv/bin/python scripts/run-backtest.py gold_sma GLD 2018-01-01 2024-12-31 100000
@@ -107,7 +107,7 @@ whaletrail/
 
 1. **主源：** yfinance（日线）
 2. **缓存：** `data_cache/` Parquet，减少外网抖动
-3. **代理：** 访问 Yahoo 时设 `HTTPS_PROXY`（如 Clash `7890`）
+3. **代理：** 访问 Yahoo 时设 `HTTPS_PROXY`（如 BoostNet `7892`）
 4. **不做：** 分钟线、tick、A股/港股接口
 
 ---

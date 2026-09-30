@@ -41,7 +41,7 @@ DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 BATCH_SIZE = 25
 RESULTS_DIR = ROOT / "results"
 STATE_FILE = RESULTS_DIR / "sentiment_state.json"
-PROXY = os.environ.get("WT_PROXY_URL") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7890"
+PROXY = os.environ.get("WT_PROXY_URL") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7892"
 
 os.environ.setdefault("HTTPS_PROXY", PROXY)
 

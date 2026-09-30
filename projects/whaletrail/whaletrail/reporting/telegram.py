@@ -4,7 +4,7 @@ Credentials come from ``TG_BOT_TOKEN`` / ``TG_CHAT_ID``, falling back to the
 git-ignored ``~/.config/whaletrail/telegram.env`` so cron entries need no shell
 wrapper.  Telegram is unreachable from the mainland without the local proxy, so
 the sender tries the environment proxy first, then a direct connection, then
-``127.0.0.1:7890``.
+``127.0.0.1:7892``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_CHAT_ID = "5102138680"
-DEFAULT_PROXY = "http://127.0.0.1:7890"
+DEFAULT_PROXY = "http://127.0.0.1:7892"
 ENV_FILE = Path.home() / ".config" / "whaletrail" / "telegram.env"
 
 

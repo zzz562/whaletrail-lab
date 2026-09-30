@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 PROXY = (
     os.environ.get("WT_PROXY_URL")
     or os.environ.get("HTTPS_PROXY")
-    or "http://127.0.0.1:7890"
+    or "http://127.0.0.1:7892"
 )
 os.environ.setdefault("HTTPS_PROXY", PROXY)
 os.environ.setdefault("HTTP_PROXY", PROXY)

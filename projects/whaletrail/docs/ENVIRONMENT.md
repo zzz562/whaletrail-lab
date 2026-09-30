@@ -6,7 +6,7 @@
 
 | 机器 | 角色 | 路径 | 关键能力 |
 |------|------|------|----------|
-| Mac mini | 唯一开发机/源码唯一来源 + 运行/部署 | `~/Projects/whaletrail-lab` | 写代码、git push、venv、Clash 代理、Ollama、OpenClaw、cron/launchd。Thunderbolt IP 会变，SSH 不稳时用 `macmini-remote` |
+| Mac mini | 唯一开发机/源码唯一来源 + 运行/部署 | `~/Projects/whaletrail-lab` | 写代码、git push、venv、BoostNet 代理、Ollama、OpenClaw、cron/launchd。Thunderbolt IP 会变，SSH 不稳时用 `macmini-remote` |
 | MacBook | 观察者/只读 | `~/github_code/whaletrail-lab` | git pull 后人工查看代码；无 Telegram/OpenClaw/cron |
 | VPS | 公网跳板 | — | OpenClaw 公网入口、SSH 反向隧道 |
 
@@ -18,7 +18,7 @@
 | WhaleTrail 看板（预发） | Mac mini | 8768 | 公网 `http://139.224.244.214/stage/`（nginx 把 `/stage/` 转到隧道 `8768`）。跑 lab 工作区，改代码不重启生产 |
 | OpenClaw Gateway | Mac mini | 18789 | `http://localhost:18789/health` |
 | Ollama | Mac mini | 11434 | `http://localhost:11434/api/tags` |
-| Clash 代理 | Mac mini | 7890 | 脚本默认 `HTTPS_PROXY` |
+| BoostNet 代理 | Mac mini | 7892 | 脚本默认 `HTTPS_PROXY` |
 
 ## 公网入口（看板）
 
@@ -46,12 +46,12 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 
 ## 代理
 
-脚本访问 Yahoo / X / DeepSeek 需要代理，默认 `http://127.0.0.1:7890`（Mac mini 的 Clash）。
+脚本访问 Yahoo / X / DeepSeek 需要代理，默认 `http://127.0.0.1:7892`（Mac mini 的 BoostNet）。
 
-- `run-backtest.py`、`paper-live.py`、`sentiment.py`：读 `HTTPS_PROXY`，未设则回落到 7890。
-- `daily-report.sh`：先探测 7890 可用，不可用则直连。
+- `run-backtest.py`、`paper-live.py`、`sentiment.py`：读 `HTTPS_PROXY`，未设则回落到 7892。
+- `daily-report.sh`：先探测 7892 可用，不可用则直连。
 
-**注意：`7890` / `11434` / `18789` 目前多为 `127.0.0.1` 硬编码，指向 Mac mini 本地。** 在 MacBook 上运行时，必须先建立上面的端口转发，否则会连到 MacBook 自己的 localhost。
+**注意：`7892` / `11434` / `18789` 目前多为 `127.0.0.1` 硬编码，指向 Mac mini 本地。** 在 MacBook 上运行时，必须先建立上面的端口转发，否则会连到 MacBook 自己的 localhost。
 
 ## 密钥与凭证
 
@@ -90,13 +90,13 @@ cd ~/github_code/whaletrail-lab/projects/whaletrail
 .venv/bin/pip install -r requirements.txt
 ```
 
-MacBook 当前没有 `.venv`；本地跑回测前先建 venv，并确保 7890 代理可用（或经隧道连 Mac mini）。
+MacBook 当前没有 `.venv`；本地跑回测前先建 venv，并确保 7892 代理可用（或经隧道连 Mac mini）。
 
 ## 配置项（环境变量）
 
 | 变量 | 默认值 | 用途 |
 |------|--------|------|
-| `WT_PROXY_URL` | `http://127.0.0.1:7890` | 代理（优先于 `HTTPS_PROXY`） |
+| `WT_PROXY_URL` | `http://127.0.0.1:7892` | 代理（优先于 `HTTPS_PROXY`） |
 | `WT_OLLAMA_URL` | `http://127.0.0.1:11434/api/generate` | Ollama 打分端点 |
 | `WT_OPENCLAW_ENV_FILE` | `~/.openclaw/service-env/ai.openclaw.gateway.env` | DeepSeek 密钥文件 |
 | `HTTPS_PROXY` | — | 标准代理变量，`WT_PROXY_URL` 未设时生效 |
@@ -105,4 +105,4 @@ MacBook 本地跑脚本时，先建端口转发（默认值即可用），或设
 
 ## 已知耦合
 
-- 默认地址仍指向 Mac mini 本地（`127.0.0.1:7890`、`127.0.0.1:11434`、`~/.openclaw/...`）。MacBook 迭代需建立端口转发，或用 `WT_*` 环境变量覆盖。
+- 默认地址仍指向 Mac mini 本地（`127.0.0.1:7892`、`127.0.0.1:11434`、`~/.openclaw/...`）。MacBook 迭代需建立端口转发，或用 `WT_*` 环境变量覆盖。
