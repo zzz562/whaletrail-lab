@@ -238,6 +238,18 @@ def main() -> None:
     parser.add_argument(
         "--fail-threshold", type=int, default=300, help="单只失败超过该值时告警（默认 300）"
     )
+    parser.add_argument(
+        "--retry-passes", type=int, default=1, help="单只失败后的重试轮数（默认 1，0 = 不重试）"
+    )
+    parser.add_argument(
+        "--retry-sleep", type=float, default=60.0, help="重试前等待秒数（默认 60）"
+    )
+    parser.add_argument(
+        "--abort-fail-ratio",
+        type=float,
+        default=0.5,
+        help="每 200 只检查一次，失败占比超过该值就提前结束（默认 0.5，0 = 不提前结束）",
+    )
     parser.add_argument("--no-alert", action="store_true", help="不推送 Telegram 告警")
     parser.add_argument("--no-lock", action="store_true", help="不检查并发锁")
     args = parser.parse_args()
@@ -300,9 +312,14 @@ def main() -> None:
         total_new = 0
         refill_n = 0
         failures: list[str] = []
+        error_msgs: dict[str, str] = {}
+        failed_codes: set[str] = set()
         newest: str | None = None
         truncated = False
-        for idx, (code, _name) in enumerate(codes, start=1):
+
+        def fetch_and_save(code: str) -> str:
+            """Fetch one code and persist it → ``ok`` / ``empty`` / ``skip`` / ``failed``."""
+            nonlocal total_new, refill_n, newest
             if fixed:
                 start, end = win_from, win_to
             else:
@@ -317,31 +334,49 @@ def main() -> None:
                     start = start_floor
                 end = today
                 if start > end:
-                    continue
+                    return "skip"
 
+            before = len(source.failures)
             try:
                 signal.setitimer(signal.ITIMER_REAL, args.query_timeout)
                 df = source.fetch_daily(code, start, end)
-            except Exception as exc:  # 网络错误 / 查询超时：记下这一只，继续其余
+            except Exception as exc:  # 网络错误 / 查询超时
                 failures.append(f"{code}: {exc}")
-                continue
+                error_msgs[code] = f"{type(exc).__name__}: {exc}"
+                failed_codes.add(code)
+                return "failed"
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
 
+            if len(source.failures) > before:  # error_code != 0（返回空表，不抛异常）
+                failures.append(f"{code}: {source.failures[-1].get('error_msg', 'error')}")
+                error_msgs[code] = str(source.failures[-1].get("error_msg") or "error")
+                failed_codes.add(code)
+                return "failed"
             if df.empty:
-                continue
+                return "empty"
 
             last_bar = df.index[-1].strftime("%Y-%m-%d")
             if newest is None or last_bar > newest:
                 newest = last_bar
             total_new += repo.save_daily_bars(_bars_to_rows(code, df))
+            failed_codes.discard(code)
+            return "ok"
 
+        for idx, (code, _name) in enumerate(codes, start=1):
+            fetch_and_save(code)
             if idx % 200 == 0:
                 print(
                     f"  进度 {idx}/{len(codes)} · 写入 bar {total_new} · 补字段 {refill_n}"
-                    f" · 失败 {len(failures) + len(source.failures)}"
+                    f" · 失败 {len(failed_codes)} 只（尝试 {len(failures)} 次）"
                 )
-
+                if args.abort_fail_ratio and len(failed_codes) > args.abort_fail_ratio * idx:
+                    truncated = True
+                    _stamp(
+                        f"前 {idx} 只里失败 {len(failed_codes)} 只（服务端大面积异常），"
+                        f"提前结束交给下一班（baostock 17:30 入库窗口最不稳）"
+                    )
+                    break
             if time.monotonic() > deadline:
                 truncated = True
                 _stamp(
@@ -349,9 +384,25 @@ def main() -> None:
                 )
                 break
 
+        still_failed = set(failed_codes)
+        for attempt in range(1, max(0, args.retry_passes) + 1):
+            if not still_failed or time.monotonic() > deadline:
+                break
+            _stamp(f"重试第 {attempt} 轮：{len(still_failed)} 只（先等 {args.retry_sleep:g}s）")
+            time.sleep(args.retry_sleep)
+            retry_list = sorted(still_failed)
+            still_failed = set()
+            for code in retry_list:
+                if time.monotonic() > deadline:
+                    still_failed.update(retry_list[retry_list.index(code):])
+                    break
+                if fetch_and_save(code) == "failed":
+                    still_failed.add(code)
+            _stamp(f"重试第 {attempt} 轮结束：仍失败 {len(still_failed)} 只")
+
         _stamp(
             f"完成：{len(codes)} 只，写入 {total_new} 行（其中补字段 {refill_n} 只）· "
-            f"单只失败 {len(failures) + len(source.failures)} 只 · 最新 {newest or '-'}"
+            f"重试后仍失败 {len(still_failed)} 只（失败尝试 {len(failures)} 次）· 最新 {newest or '-'}"
         )
 
         # Benchmark index daily bars → index_kline (same window/incremental rules).
@@ -391,8 +442,7 @@ def main() -> None:
         _stamp(f"抓取结束，耗时 {elapsed / 60:.1f} 分钟")
         _alert(
             stock_failures=[
-                *failures,
-                *(f"{f['code']} ({f['error_msg']})" for f in source.failures),
+                f"{code}: {error_msgs.get(code, 'error')}" for code in sorted(still_failed)
             ],
             index_failures=idx_failures,
             total_new=total_new,

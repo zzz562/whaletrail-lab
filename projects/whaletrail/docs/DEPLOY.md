@@ -120,7 +120,9 @@ Mac mini 直连，不走代理。日 K 加列后旧行 `tradestatus` 为空，�
 
 - `--query-timeout`（默认 90s）：单只查询用 SIGALRM 截断。baostock 的 socket 读循环在服务端半关连接后 `while True: recv(8192)` 永不返回（`baostock/util/socketutil.py`），只靠 socket timeout 治不了。
 - `--max-minutes`（默认 90）：整轮超预算即停抓并告警，不会拖到下一班。
-- 失败计数 + Telegram 告警：单只失败超过 `--fail-threshold`（默认 300）或基准指数有失败就推送；`--no-alert` 关闭。
+- **轮内重试**：`--retry-passes`（默认 1）+ `--retry-sleep`（默认 60s），整轮结束后对失败的代码再跑一轮，同样受预算约束。单只失败的原生重试仍是「下一班补」（增量按每只代码的 `MAX(trade_date)` 起点）。
+- **大面积失败提前收工**：每 200 只检查一次，失败占比超 `--abort-fail-ratio`（默认 0.5）就停下，不对着挂掉的服务磨完整个市场（2026-09-30 17:27 那轮就是这么白跑了 30 分钟）。
+- 失败计数 + Telegram 告警：**重试后仍失败**的标的数超过 `--fail-threshold`（默认 300）或基准指数有失败就推送；`--no-alert` 关闭。
 - 并发锁 `results/.fetch-baostock.lock`：上一班没跑完时下一班直接跳过（`--no-lock` 关闭）。
 
 注意 baostock 同一时刻只认一个会话：两个进程同时跑（手动 + cron，或两次手动）会互相踢下线，报 `10001001 用户未登录`，症状是后半段标的静默失败（2026-09-29 补 2018 历史时踩到，1055 只只补了 685 只）。**连「登录探一下今天数据发没发」都会踢掉正在跑的班次**——2026-09-30 16:30 那班就是被一个探测脚本在 16:30:18 登录打断的，3,812 只报未登录（告警正常推送）。所以：锁只挡 cron 之间；任何会 `bs.login()` 的动作，先 `pgrep -f fetch-baostock-universe.py` 确认没有班次在跑，并且探测本身要用 SIGALRM 限时（半关连接会让 baostock 的读循环空转不返回）。
@@ -195,6 +197,8 @@ cd ~/Projects/whaletrail-lab/projects/whaletrail
 
 - 东财 `push2/api/qt/clist/get`（akshare 走的那条）**按源 IP 限流**：同一 URL 从阿里云 VPS 正常、从家里宽带被丢连接（TCP 通、HTTP 层被断，`/` 仍返回 404）。`datacenter-web` 那条没被限，且带 `SECUCODE`（交易所后缀）与 `BOARD_TYPE_NEW`（1 地域 / 2 行业 / 3 概念 / 4 其他），翻页就能拿全市场成分，比 clist 每板块一次少两个数量级请求。
 - 三源都是国内站点，脚本用 `Session(trust_env=False)` **直连、绕开系统代理**（Clash 系统代理时通时断，走它反而添乱）。
+
+**当天日线不要抢在 17:30–18:45 抓**：baostock 是 17:30 开始把当日 K 入库，那段时间服务最不稳——2026-09-30 17:27 抢抓的那轮 3,788/5,224 只报 `10002007 网络接收错误`，指数腿 8/8 失败；同一天 18:04 再跑就正常了。当天数据交给 20:00 那班；要提前，至少等 19:00 之后（`scripts/check-ashare-data.py` 的判定和 `daily-status.py` 会告诉你齐没齐）。
 
 口径（用配置表自己算）：
 
