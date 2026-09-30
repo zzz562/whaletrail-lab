@@ -138,6 +138,42 @@ CODES=$(sqlite3 results/whaletrail.db "SELECT group_concat(code, ',') FROM (SELE
 .venv/bin/python scripts/check-ashare-data.py --no-alert              # 只体检
 ```
 
+## 板块/指数 配置表（板块与指数「自己算」）
+
+日线/指数点位走 baostock（见上），**配置表**（成分 + 权重）单独抓，板块与指数的序列一律用 `daily_kline` 本地计算，不取任何第三方的板块指数点位：
+
+```cron
+0 9 * * 6 cd /Users/zeph/Projects/whaletrail-lab/projects/whaletrail && .venv/bin/python scripts/fetch-board-members.py >> logs/fetch-board-members.log 2>&1
+```
+
+```bash
+cd ~/Projects/whaletrail-lab/projects/whaletrail
+.venv/bin/python scripts/fetch-board-members.py                  # 三源全抓（约 2 分钟）
+.venv/bin/python scripts/fetch-board-members.py --sources csi,cn  # 只抓官方指数表
+.venv/bin/python scripts/fetch-board-members.py --em-pages 3 --no-alert   # 冒烟
+```
+
+落表 `board_members(board_id, board_type, board_name, code, name, weight, vendor_date, source, snapshot_date)`，快照式：每次抓取对每个板块写一组 `snapshot_date` 行，历史可回溯、成分变化看得见。
+
+| 来源 | board_type | 覆盖（2026-09-30） | 权重 |
+|------|-----------|--------------------|------|
+| 东财 `datacenter-web` 报表 `RPT_BOARD_CONSTITUENT` | `concept_em` / `industry_em` / `region_em` / `other_em` | 400 概念 + 496 行业 + 31 地域 + 104 其他（风格/事件/资金），1,031 个板块 / 9.4 万条成分 | 无 |
+| 中证指数公司 closeweight xls | `index_csi` | 上证50 / 沪深300 / 中证500 / 中证1000 / 中证800 / 中证全指 / 科创50 | **完整**（合计 100%） |
+| 国证/深证信息 sample-detail xls | `index_cn` | 深证成指 / 中小100 / 创业板指 / 国证2000 | **仅前 10 名**（合计 24–54%），不能复算指数 |
+
+两点实测（2026-09-30）：
+
+- 东财 `push2/api/qt/clist/get`（akshare 走的那条）**按源 IP 限流**：同一 URL 从阿里云 VPS 正常、从家里宽带被丢连接（TCP 通、HTTP 层被断，`/` 仍返回 404）。`datacenter-web` 那条没被限，且带 `SECUCODE`（交易所后缀）与 `BOARD_TYPE_NEW`（1 地域 / 2 行业 / 3 概念 / 4 其他），翻页就能拿全市场成分，比 clist 每板块一次少两个数量级请求。
+- 三源都是国内站点，脚本用 `Session(trust_env=False)` **直连、绕开系统代理**（Clash 系统代理时通时断，走它反而添乱）。
+
+口径（用配置表自己算）：
+
+- **中证系列**：权重完整，`Σ w·pct_chg / Σ w` 即可复算——实测 15 个交易日平均误差 0.02–0.03pp（沪深300 / 中证500 / 中证1000 / 上证50，权重为 8-31 生效版本）。
+- **国证/深证系列**：只用它的成分表，权重自己算（等权，或用 `volume/turn` 反推自由流通市值，同 `scripts/sector-rotation.py`），不能拿文件的权重列。
+- **概念/行业板块**：无权重，按板块独立算等权／加权收益、成交额占比、上涨家数；注意概念高度重叠，**不要跨板块加总成交额**。
+- 成分表只有「当前」口径（中证按月调整、概念每周变），回放历史会有前视；配置表适合当期与前向判断，长历史回测需另设口径。
+- 北交所成员（`bj.`）入库但 `daily_kline` 无其日线，聚合时自动脱落（概念板块约 3.6% 的成分属于此类）。
+
 ## 日志
 
 ```bash

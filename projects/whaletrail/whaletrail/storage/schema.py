@@ -11,6 +11,7 @@ Tables
 - ``ashare_industry`` — 证监会行业分类（大类，非申万）.
 - ``ashare_index_constituents`` — sz50 / hs300 / zz500 membership.
 - ``index_kline``   — benchmark index daily bars (sector-rotation baselines).
+- ``board_members`` — 板块/指数成分配置表（东财概念・东财行业・中证・国证），带权重与生效日。
 """
 
 from __future__ import annotations
@@ -142,6 +143,24 @@ CREATE TABLE IF NOT EXISTS index_kline (
     pct_chg         REAL,
     PRIMARY KEY (code, trade_date)
 );
+
+-- 板块/指数「配置表」：只存成分与权重，点位/轮动全部用 daily_kline 本地计算。
+-- board_id 形如 EM:BK1753（东财板块）/ CSI:000300（中证）/ CN:399303（国证）。
+-- 快照式写入：同一 board_id 每天一行，历史可回溯（成分变化看得见）。
+CREATE TABLE IF NOT EXISTS board_members (
+    board_id        TEXT    NOT NULL,
+    board_type      TEXT    NOT NULL,  -- concept_em / industry_em / index_csi / index_cn
+    board_name      TEXT,
+    code            TEXT    NOT NULL,  -- 本库口径：sh.600690 / sz.000338 / bj.920489
+    name            TEXT,              -- 来源给出的成分名称
+    weight          REAL,              -- 权重 %；概念/行业板块为空
+    vendor_date     TEXT,              -- 来源标注的生效日（中证/国证提供）
+    source          TEXT,              -- eastmoney / csindex / cnindex
+    snapshot_date   TEXT    NOT NULL,  -- 抓取日 YYYY-MM-DD
+    PRIMARY KEY (board_id, code, snapshot_date)
+);
+CREATE INDEX IF NOT EXISTS idx_board_members_code ON board_members(code);
+CREATE INDEX IF NOT EXISTS idx_board_members_type ON board_members(board_type, snapshot_date);
 """
 
 

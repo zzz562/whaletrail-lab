@@ -3,6 +3,7 @@
 #   .venv/bin/pip install "git+https://github.com/rongardF/tvdatafeed.git"
 # A股全市场日线（相似选股 / baostock 数据源）
 baostock>=0.8.8
+xlrd>=2.0.1          # 解析中证/国证 成分权重 xls（板块/指数配置表）
 yfinance>=0.2.40
 pandas>=2.0.0
 numpy>=1.24.0

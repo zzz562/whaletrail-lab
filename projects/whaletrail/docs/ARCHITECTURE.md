@@ -32,6 +32,9 @@ tvscreener ─► TVScreenerSource ─► quote_snapshots ─► build_daily_his
 baostock  ─► BaostockSource ─► daily_kline / index_kline / ashare_universe / ashare_industry / ashare_index_constituents
                                           ├────────► dashboard 相似选股（daily_bars → screen_similar：K 召回，特征距离；retrieve_rank 仅旧 CLI）
                                           └────────► check-ashare-data.py（21:45 完整性体检）/ 抓取失败 ─► Telegram 告警
+
+东财报表 / 中证 / 国证 ─► fetch-board-members.py ─► board_members（成分+权重，快照式）
+                                                        └─► 板块/指数序列 = board_members × daily_kline（本地算，同 sector-rotation.py 口径）
 ```
 
 ## 数据层组合
@@ -44,6 +47,7 @@ baostock  ─► BaostockSource ─► daily_kline / index_kline / ashare_univer
 | intraday 历史（5m/10m/1h 回测） | yfinance + Parquet 累积 | `data/intraday.py`；yfinance 5m 上限 60 天，缓存 key `<symbol>_<interval>` 跨窗口累积；10m 由 5m 重采样 |
 | 实时快照 / watchlist / A股 paper | tvscreener | `get_quotes`；快照积累进 `quote_snapshots`，经 `build_daily_history` 生成日线 |
 | A股全市场日 K / 相似选股 / 行业 / 基准指数 | baostock | `daily_kline`（不复权 OHLCV + turn/ST/PE/PB）；`ashare_universe`；证监会行业分类（83 大类，非申万）；sz50/hs300/zz500；`index_kline` 8 条基准指数日 K。无概念板块。Mac mini 直连，工作日 16:30/20:00 cron 例行；单只失败记入 `BaostockSource.failures`，异常与不完整数据走 Telegram 告警（`whaletrail/reporting/telegram.py`） |
+| 板块/指数 配置表（成分+权重） | 东财 datacenter 报表 / 中证官网 / 国证官网 | `board_members` 快照表。东财 push2 clist 端点按源 IP 限流，故走 datacenter 报表（1,031 个板块）。中证权重完整可复算；国证仅前 10 名权重，只能用成分表。点位与轮动本地用 `daily_kline` 算，不取第三方板块指数点位 |
 | paper-live 5m 信号 | yfinance | 实时扫描仍走 yfinance（`intraday.fetch_bars`，不写缓存） |
 
 入口：`whaletrail/data/layer.py` 的 `DataLayer`。快照源的 yfinance fallback 是待办（需 tv/yahoo 符号映射）。

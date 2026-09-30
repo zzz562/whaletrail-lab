@@ -336,6 +336,79 @@ class Repository:
         ).fetchall()
         return [r["code"] for r in rows]
 
+    # ── 板块/指数 配置表 ──────────────────────────────────────────
+    def save_board_members(
+        self,
+        board_id: str,
+        board_type: str,
+        board_name: str,
+        source: str,
+        snapshot_date: str,
+        rows: list[dict],
+    ) -> int:
+        """Replace one board's snapshot of members. Returns rows written."""
+        self.conn.execute(
+            "DELETE FROM board_members WHERE board_id = ? AND snapshot_date = ?",
+            (board_id, snapshot_date),
+        )
+        batch = [
+            (
+                board_id,
+                board_type,
+                board_name,
+                r.get("code", ""),
+                r.get("name") or "",
+                r.get("weight"),
+                r.get("vendor_date"),
+                source,
+                snapshot_date,
+            )
+            for r in rows
+        ]
+        cur = self.conn.executemany(
+            """INSERT OR REPLACE INTO board_members
+               (board_id, board_type, board_name, code, name, weight, vendor_date, source, snapshot_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            batch,
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def board_list(self, board_type: Optional[str] = None) -> list[dict]:
+        """Newest snapshot of each board as ``{board_id, board_type, board_name,
+        snapshot_date, members}``, optionally filtered by *board_type*."""
+        rows = self.conn.execute(
+            """SELECT b.board_id, b.board_type, b.board_name, b.snapshot_date, COUNT(*) AS members
+               FROM board_members b
+               JOIN (SELECT board_id, MAX(snapshot_date) AS d FROM board_members GROUP BY board_id) m
+                 ON m.board_id = b.board_id AND m.d = b.snapshot_date
+               WHERE (? IS NULL OR b.board_type = ?)
+               GROUP BY b.board_id, b.board_type, b.board_name, b.snapshot_date
+               ORDER BY b.board_type, b.board_id""",
+            (board_type, board_type),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def board_members(
+        self, board_id: str, snapshot_date: Optional[str] = None
+    ) -> list[dict]:
+        """Members of one board (newest snapshot unless *snapshot_date* given)."""
+        if snapshot_date is None:
+            row = self.conn.execute(
+                "SELECT MAX(snapshot_date) AS d FROM board_members WHERE board_id = ?",
+                (board_id,),
+            ).fetchone()
+            if row is None or row["d"] is None:
+                return []
+            snapshot_date = row["d"]
+        rows = self.conn.execute(
+            """SELECT code, name, weight, vendor_date, board_name, board_type, snapshot_date
+               FROM board_members WHERE board_id = ? AND snapshot_date = ?
+               ORDER BY (weight IS NULL), weight DESC, code""",
+            (board_id, snapshot_date),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def save_index_bars(self, rows: list[dict]) -> int:
         """Bulk-upsert benchmark index daily bars into ``index_kline``."""
         batch = [
