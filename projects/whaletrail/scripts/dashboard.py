@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """WhaleTrail Dashboard — read-only monitor.
 
-Pages: 黄金 paper / A股 paper / 相似选股 / KOL 评测 / 跟庄复盘.
-Bare / renders 相似选股. Other pages: /?page=gold|ashare|kol|genzhuang.
+Pages: 黄金 paper / A股 paper / 相似选股 / 板块指数 / KOL 评测 / 跟庄复盘.
+Bare / renders 相似选股. Other pages: /?page=gold|ashare|boards|kol|genzhuang.
 No tab bar — the query string is the only switch.
 """
 from __future__ import annotations
@@ -24,6 +24,7 @@ from whaletrail.data.watchlist import load_watchlist
 from whaletrail.metrics.performance import calculate_metrics, compute_trade_pnl
 from whaletrail.chips import chip_histogram, distribution_stats
 from whaletrail.context import (
+    board_of,
     cap_text,
     load_index_moves,
     name_context,
@@ -777,6 +778,372 @@ def page_ashare_paper() -> None:
     _page_header("A股 paper", "空壳 · 策略未决 · 金矿股归本页 · 不是跟庄 · 不是下单台")
     _note("这轮只拆壳。A 股 paper 策略未决；观察/接近/触发只在「跟庄复盘」。紫金等金矿股将来进本页，不进黄金 paper。")
     st.info("A 股 paper 内容待拍。现网 ashare_paper_state 先不展示，避免和跟庄三字混读。")
+
+_BOARD_TYPE_LABELS = {
+    "concept_em": "东财概念",
+    "industry_em": "东财行业",
+    "region_em": "东财地域",
+    "other_em": "东财其他",
+    "index_csi": "中证指数",
+    "index_cn": "国证/深证",
+}
+
+def _board_type_label(board_type: str) -> str:
+    return _BOARD_TYPE_LABELS.get(board_type, board_type or "—")
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_board_foundation() -> dict[str, Any]:
+    try:
+        repo = Repository(DB_PATH)
+        tables = {r[0] for r in repo.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "board_members" not in tables:
+            repo.close()
+            return {"available": False}
+        latest = repo.conn.execute("SELECT MAX(snapshot_date) FROM board_members").fetchone()[0]
+        if not latest:
+            repo.close()
+            return {"available": False}
+        summary = pd.read_sql_query(
+            """SELECT board_type, COUNT(DISTINCT board_id) AS boards, COUNT(*) AS members,
+                      SUM(CASE WHEN weight IS NOT NULL THEN 1 ELSE 0 END) AS weighted_rows,
+                      MIN(vendor_date) AS vendor_min, MAX(vendor_date) AS vendor_max
+               FROM board_members WHERE snapshot_date = ?
+               GROUP BY board_type ORDER BY board_type""",
+            repo.conn, params=[latest],
+        )
+        boards = pd.read_sql_query(
+            """SELECT board_id, board_type, board_name, COUNT(*) AS members,
+                      SUM(CASE WHEN weight IS NOT NULL THEN 1 ELSE 0 END) AS weighted_rows,
+                      ROUND(SUM(COALESCE(weight, 0)), 2) AS weight_sum,
+                      MAX(vendor_date) AS vendor_date, MAX(source) AS source,
+                      MAX(snapshot_date) AS snapshot_date
+               FROM board_members WHERE snapshot_date = ?
+               GROUP BY board_id, board_type, board_name
+               ORDER BY board_type, board_name""",
+            repo.conn, params=[latest],
+        )
+        csrc = repo.conn.execute(
+            "SELECT COUNT(*) AS rows, COUNT(NULLIF(industry,'')) AS mapped, COUNT(DISTINCT industry) AS industries FROM ashare_industry"
+        ).fetchone()
+        daily = repo.conn.execute(
+            "SELECT MAX(trade_date), COUNT(*) FROM daily_kline WHERE trade_date = (SELECT MAX(trade_date) FROM daily_kline)"
+        ).fetchone()
+        idx = repo.conn.execute(
+            "SELECT MAX(trade_date), COUNT(*) FROM index_kline WHERE trade_date = (SELECT MAX(trade_date) FROM index_kline)"
+        ).fetchone()
+        repo.close()
+        summary["类型"] = summary["board_type"].map(_board_type_label)
+        boards["类型"] = boards["board_type"].map(_board_type_label)
+        return {
+            "available": True,
+            "latest": latest,
+            "summary": summary,
+            "boards": boards,
+            "csrc": dict(csrc) if csrc else {},
+            "daily": {"date": daily[0] if daily else None, "rows": daily[1] if daily else 0},
+            "index": {"date": idx[0] if idx else None, "rows": idx[1] if idx else 0},
+        }
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_board_member_view(board_id: str) -> dict[str, Any]:
+    try:
+        repo = Repository(DB_PATH)
+        latest_row = repo.conn.execute(
+            "SELECT MAX(snapshot_date) FROM board_members WHERE board_id = ?",
+            (board_id,),
+        ).fetchone()
+        snapshot = latest_row[0] if latest_row else None
+        asof_row = repo.conn.execute("SELECT MAX(trade_date) FROM daily_kline").fetchone()
+        asof = asof_row[0] if asof_row else None
+        if not snapshot:
+            repo.close()
+            return {"members": pd.DataFrame(), "stats": {}, "asof": asof}
+        members = pd.read_sql_query(
+            """SELECT m.code, m.name, m.weight, m.vendor_date, m.board_name, m.board_type, m.snapshot_date,
+                      d.close, d.pct_chg, d.amount, d.tradestatus, d.is_st
+               FROM board_members m
+               LEFT JOIN daily_kline d ON d.code = m.code AND d.trade_date = ?
+               WHERE m.board_id = ? AND m.snapshot_date = ?
+               ORDER BY (m.weight IS NULL), m.weight DESC, m.code""",
+            repo.conn, params=[asof, board_id, snapshot],
+        )
+        repo.close()
+        covered = members[members["pct_chg"].notna()].copy() if not members.empty else members
+        tradable = covered[(covered["tradestatus"] == 1) & (covered["is_st"] == 0)].copy() if not covered.empty else covered
+        eq_ret = float(tradable["pct_chg"].mean()) if not tradable.empty else None
+        weighted_ret = None
+        w = pd.to_numeric(tradable.get("weight"), errors="coerce") if not tradable.empty else pd.Series(dtype=float)
+        if len(w) and w.notna().any() and float(w.fillna(0).sum()) > 0:
+            weighted_ret = float((tradable["pct_chg"] * w).sum() / w.sum())
+        stats = {
+            "members": int(len(members)),
+            "covered": int(len(covered)),
+            "tradable": int(len(tradable)),
+            "coverage": (len(covered) / len(members) * 100.0) if len(members) else None,
+            "eq_ret": eq_ret,
+            "weighted_ret": weighted_ret,
+            "adv_ratio": float((tradable["pct_chg"] > 0).mean() * 100.0) if not tradable.empty else None,
+            "amount_yi": float(tradable["amount"].sum() / 1e8) if not tradable.empty else None,
+        }
+        return {"members": members, "stats": stats, "asof": asof, "snapshot": snapshot}
+    except Exception as exc:
+        return {"members": pd.DataFrame(), "stats": {}, "error": str(exc)}
+
+_LIMIT_UP = {
+    "沪主板": 9.9,
+    "深主板": 9.9,
+    "创业板": 19.9,
+    "科创板": 19.9,
+    "北交所": 29.9,
+    "其他": 9.9,
+}
+
+_HEAT_SORT = {
+    "成交额（亿）": "amount",
+    "涨跌幅%": "ew_ret",
+    "5日涨幅%": "ret5",
+    "20日涨幅%": "ret20",
+    "换手率%": "turn",
+    "上涨家数%": "adv",
+    "涨停家数": "limit_up",
+    "放量比": "amount_ratio",
+}
+
+_BOARD_SCOPE = {
+    "概念+行业": ("concept_em", "industry_em"),
+    "东财概念": ("concept_em",),
+    "东财行业": ("industry_em",),
+    "东财地域": ("region_em",),
+    "东财其他": ("other_em",),
+    "中证指数": ("index_csi",),
+    "国证/深证": ("index_cn",),
+    "全部": None,
+}
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_board_heat() -> dict[str, Any]:
+    """Aggregate board members back onto local daily_kline for the latest day."""
+    try:
+        repo = Repository(DB_PATH)
+        latest_snap = repo.conn.execute("SELECT MAX(snapshot_date) FROM board_members").fetchone()[0]
+        latest_day = repo.conn.execute("SELECT MAX(trade_date) FROM daily_kline").fetchone()[0]
+        if not latest_snap or not latest_day:
+            repo.close()
+            return {"available": False}
+        members = pd.read_sql_query(
+            "SELECT board_id, board_type, board_name, code FROM board_members WHERE snapshot_date = ?",
+            repo.conn, params=[latest_snap],
+        )
+        dates = pd.read_sql_query(
+            "SELECT DISTINCT trade_date FROM daily_kline WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 25",
+            repo.conn, params=[latest_day],
+        )["trade_date"].tolist()
+        if len(dates) < 2:
+            repo.close()
+            return {"available": False, "error": "daily_kline 天数不足"}
+        kline = pd.read_sql_query(
+            "SELECT code, trade_date, close, pct_chg, amount, turn, tradestatus, is_st "
+            "FROM daily_kline WHERE trade_date >= ?",
+            repo.conn, params=[dates[-1]],
+        )
+        repo.close()
+        kline = kline.sort_values(["code", "trade_date"]).reset_index(drop=True)
+        kline["ret5"] = kline.groupby("code", sort=False)["close"].pct_change(5)
+        kline["ret20"] = kline.groupby("code", sort=False)["close"].pct_change(20)
+        kline["amt_ma5"] = (
+            kline.groupby("code", sort=False)["amount"]
+            .rolling(5, min_periods=5)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+        kline["amt_prev5"] = kline.groupby("code", sort=False)["amt_ma5"].shift(1)
+        today = kline[kline["trade_date"] == latest_day]
+        today = today[(today["tradestatus"] == 1) & (today["is_st"] == 0) & today["pct_chg"].notna()]
+        m = members.merge(
+            today[["code", "pct_chg", "amount", "turn", "ret5", "ret20", "amt_prev5"]],
+            on="code", how="left",
+        )
+        m["limit"] = m["code"].map(board_of).map(_LIMIT_UP)
+        m["limit_up"] = (m["pct_chg"] >= m["limit"]).fillna(False).astype(int)
+        valid = m[m["pct_chg"].notna()]
+        g = valid.groupby(["board_id", "board_type", "board_name"], sort=False)
+        panel = pd.DataFrame({
+            "n": g["pct_chg"].size(),
+            "ew_ret": g["pct_chg"].mean(),
+            "amount": g["amount"].sum(),
+            "turn": g["turn"].mean(),
+            "adv": g["pct_chg"].apply(lambda s: (s > 0).mean()),
+            "limit_up": g["limit_up"].sum(),
+            "ret5": g["ret5"].mean(),
+            "ret20": g["ret20"].mean(),
+            "amt_prev5": g["amt_prev5"].sum(),
+        }).reset_index()
+        total = members.groupby("board_id").size().rename("total")
+        panel = panel.merge(total, on="board_id", how="left")
+        panel["amount_ratio"] = panel["amount"] / panel["amt_prev5"]
+        panel["amount_yi"] = panel["amount"] / 1e8
+        panel["类型"] = panel["board_type"].map(_board_type_label)
+        panel["覆盖"] = panel["n"].astype(str) + "/" + panel["total"].astype(str)
+        return {"available": True, "snapshot": latest_snap, "day": latest_day, "panel": panel}
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+
+
+def page_board_heat() -> None:
+    _note("把 board_members 成分映射回本地 A 股日线，按板块聚合当日热度：涨跌、成交额、换手、上涨家数、涨停、放量。默认看概念+行业，按成交额排序。")
+    data = load_board_heat()
+    if not data.get("available"):
+        st.info(f"热度数据暂不可用：{data.get('error') or '无数据'}")
+        return
+    panel = data["panel"]
+    st.caption(f"快照 {data['snapshot']} · 交易日 {data['day']} · 板块 {len(panel):,} 个")
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        scope_label = st.selectbox("范围", list(_BOARD_SCOPE), key="board_heat_scope")
+    with c2:
+        sort_label = st.selectbox("排序", list(_HEAT_SORT), key="board_heat_sort")
+    with c3:
+        top_n = st.number_input("显示", min_value=10, max_value=100, value=30, step=5, key="board_heat_top")
+    types = _BOARD_SCOPE[scope_label]
+    df = panel if types is None else panel[panel["board_type"].isin(types)]
+    sort_col = _HEAT_SORT[sort_label]
+    df = df.sort_values(sort_col, ascending=False).head(int(top_n)).reset_index(drop=True)
+    if df.empty:
+        st.info("这个范围没有板块。")
+        return
+    chart = df.sort_values(sort_col, ascending=False).head(15)
+    plot = chart[["board_name", sort_col]].rename(columns={"board_name": "板块", sort_col: "value"})
+    bar = alt.Chart(plot).mark_bar().encode(
+        y=alt.Y("板块:N", sort="-x"),
+        x=alt.X("value:Q", title=sort_label),
+        color=alt.condition(alt.datum.value >= 0, alt.value("#4ade80"), alt.value("#f87171")),
+        tooltip=["板块", alt.Tooltip("value:Q", format=".2f")],
+    ).properties(height=320)
+    st.altair_chart(_alt_dark(bar), width="stretch")
+    view = pd.DataFrame({
+        "板块": df["board_name"],
+        "类型": df["类型"],
+        "覆盖": df["覆盖"],
+        "涨跌%": df["ew_ret"].round(2),
+        "5日%": (df["ret5"] * 100).round(2),
+        "20日%": (df["ret20"] * 100).round(2),
+        "成交额亿": df["amount_yi"].round(1),
+        "换手%": df["turn"].round(2),
+        "上涨%": (df["adv"] * 100).round(1),
+        "涨停": df["limit_up"].astype(int),
+        "放量比": df["amount_ratio"].round(2),
+    })
+    view.insert(0, "排名", range(1, len(view) + 1))
+    styled = _style_base(view.style.hide(axis="index")).format({
+        "涨跌%": "{:+.2f}", "5日%": "{:+.2f}", "20日%": "{:+.2f}",
+        "成交额亿": "{:,.1f}", "换手%": "{:,.2f}", "上涨%": "{:,.1f}",
+        "涨停": "{:,.0f}", "放量比": "{:,.2f}",
+    }, na_rep="—")
+    for col in ("涨跌%", "5日%", "20日%"):
+        styled = styled.map(_num_style, subset=[col])
+    _show(styled, width="stretch")
+    st.caption("涨停按交易所属性口径（主板≥9.9% / 创业·科创≥19.9% / 北交所≥29.9%）；放量比 = 当日成交额 / 前 5 日日均；覆盖 = 有当日行情的成分数 / 总成分数。")
+
+
+def page_boards() -> None:
+    _page_header("板块 / 指数", "热度监控 + 配置探查 · 本地日线聚合 5000+ 只 · 预发只读")
+    tab_heat, tab_config = st.tabs(["热度监控", "配置探查"])
+    with tab_heat:
+        page_board_heat()
+    with tab_config:
+        page_boards_config()
+
+
+def page_boards_config() -> None:
+    _note("数据基建：board_members 只存板块/指数成分与权重；板块涨跌用本地 A 股日线即时聚合。东财行业/概念没有权重，中证指数权重完整，国证/深证文件只有前 10 名权重。")
+    data = load_board_foundation()
+    if not data.get("available"):
+        st.info(f"board_members 暂不可用：{data.get('error') or '无数据'}")
+        return
+    summary = data["summary"]
+    boards = data["boards"]
+    csrc = data.get("csrc") or {}
+    daily = data.get("daily") or {}
+    idx = data.get("index") or {}
+    _card_row([
+        {"label": "配置快照", "value": str(data.get("latest") or "—"), "sub": "board_members 最新 snapshot_date", "accent": "#e6b450"},
+        {"label": "板块/指数", "value": f"{int(summary['boards'].sum()):,}", "sub": f"成分 {int(summary['members'].sum()):,} 行", "accent": "#38bdf8"},
+        {"label": "证监会行业", "value": f"{int(csrc.get('industries') or 0)}", "sub": f"映射 {int(csrc.get('mapped') or 0):,} 只", "accent": "#4ade80"},
+        {"label": "本地行情", "value": str(daily.get("date") or "—"), "sub": f"股票 {int(daily.get('rows') or 0):,} 行 · 指数 {idx.get('rows') or 0}/8", "accent": "#fbbf24"},
+    ], cols=4)
+
+    _sec("配置表覆盖")
+    view = summary[["类型", "boards", "members", "weighted_rows", "vendor_min", "vendor_max"]].rename(columns={
+        "boards": "板块数", "members": "成分行", "weighted_rows": "有权重行",
+        "vendor_min": "最早生效日", "vendor_max": "最新生效日",
+    })
+    _show(_style_base(view.style.hide(axis="index")).format({"板块数": "{:,.0f}", "成分行": "{:,.0f}", "有权重行": "{:,.0f}"}, na_rep="—"), width="stretch")
+
+    _sec("查一个板块 / 指数")
+    c1, c2 = st.columns([1, 2])
+    type_labels = ["全部"] + [_BOARD_TYPE_LABELS[t] for t in sorted(_BOARD_TYPE_LABELS)]
+    with c1:
+        picked_label = st.selectbox("类型", type_labels, key="board_type_filter")
+    with c2:
+        keyword = st.text_input("搜索", placeholder="输入板块名、指数名、代码，如 半导体 / 沪深300 / BK / 000300", key="board_keyword")
+    filtered = boards.copy()
+    if picked_label != "全部":
+        inv = {v: k for k, v in _BOARD_TYPE_LABELS.items()}
+        filtered = filtered[filtered["board_type"] == inv[picked_label]]
+    if keyword.strip():
+        q = keyword.strip().lower()
+        mask = (
+            filtered["board_id"].astype(str).str.lower().str.contains(q, regex=False)
+            | filtered["board_name"].fillna("").astype(str).str.lower().str.contains(q, regex=False)
+        )
+        filtered = filtered[mask]
+    filtered = filtered.sort_values(["board_type", "board_name", "board_id"])
+    if filtered.empty:
+        st.info("没有匹配的板块/指数。")
+        return
+    options = filtered["board_id"].tolist()
+    default = next((i for i, bid in enumerate(options) if bid in {"CSI:000300", "CN:399303"}), 0)
+    selected = st.selectbox(
+        "选择", options, index=default,
+        format_func=lambda bid: f"{filtered.loc[filtered['board_id'] == bid, '类型'].iloc[0]} · {filtered.loc[filtered['board_id'] == bid, 'board_name'].iloc[0]} · {bid}",
+        key="board_pick",
+    )
+    table = filtered[["类型", "board_id", "board_name", "members", "weighted_rows", "weight_sum", "vendor_date", "source", "snapshot_date"]].rename(columns={
+        "board_id": "ID", "board_name": "名称", "members": "成分", "weighted_rows": "有权重",
+        "weight_sum": "权重合计", "vendor_date": "生效日", "source": "来源", "snapshot_date": "快照",
+    }).head(80)
+    _show(_style_base(table.style.hide(axis="index")).format({"成分": "{:,.0f}", "有权重": "{:,.0f}", "权重合计": "{:,.2f}"}, na_rep="—"), width="stretch")
+    st.caption(f"当前筛选 {len(filtered):,} 个，表格先显示前 80 个；下拉选择可查看成分。")
+
+    detail = load_board_member_view(selected)
+    members = detail.get("members", pd.DataFrame())
+    stats = detail.get("stats") or {}
+    row = boards[boards["board_id"] == selected].iloc[0]
+    _sec(f"成分明细 · {row['board_name']} · {selected}")
+    _card_row([
+        {"label": "本地覆盖", "value": "—" if stats.get("coverage") is None else f"{stats['coverage']:.1f}%", "sub": f"{stats.get('covered', 0):,}/{stats.get('members', 0):,} 只 · {detail.get('asof') or '—'}", "accent": "#38bdf8"},
+        {"label": "等权涨跌", "value": _fmt_pct(stats.get("eq_ret")), "sub": f"可交易 {stats.get('tradable', 0):,} 只", "accent": "#e6b450"},
+        {"label": "权重涨跌", "value": _fmt_pct(stats.get("weighted_ret")), "sub": "仅权重完整时有参考意义", "accent": "#4ade80"},
+        {"label": "上涨家数", "value": "—" if stats.get("adv_ratio") is None else f"{stats['adv_ratio']:.1f}%", "sub": "剔除停牌和 ST", "accent": "#fbbf24"},
+        {"label": "成交额", "value": "—" if stats.get("amount_yi") is None else f"{stats['amount_yi']:.1f}亿", "sub": "本地成分合计", "accent": "#a78bfa"},
+    ], cols=5)
+    if members.empty:
+        st.info("这个板块没有成分。")
+        return
+    mview = members[["code", "name", "weight", "close", "pct_chg", "amount", "tradestatus", "is_st"]].rename(columns={
+        "code": "代码", "name": "名称", "weight": "权重%", "close": "收盘", "pct_chg": "涨跌%",
+        "amount": "成交额", "tradestatus": "交易", "is_st": "ST",
+    }).copy()
+    if "成交额" in mview:
+        mview["成交额"] = pd.to_numeric(mview["成交额"], errors="coerce") / 1e8
+    styled = _style_base(mview.head(300).style.hide(axis="index")).format({
+        "权重%": "{:,.4f}", "收盘": "{:,.2f}", "涨跌%": "{:+.2f}", "成交额": "{:,.2f}亿",
+    }, na_rep="—")
+    styled = styled.map(_num_style, subset=["涨跌%"])
+    _show(styled, width="stretch")
+    st.caption("成分表最多显示前 300 行；北交所或缺本地日线的成分会显示空行情。")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _similarity_universe(
@@ -1537,12 +1904,13 @@ with tb1:
 with tb2:
     if st.button("刷新"):
         st.cache_data.clear(); st.rerun()
-# Deep links (same host): /?page=gold|ashare|similar|kol|genzhuang
+# Deep links (same host): /?page=gold|ashare|similar|boards|kol|genzhuang
 # Bare / is 相似选股. No tab bar.
 PAGE_DEFS: list[tuple[str, str, Any]] = [
     ("gold", "黄金 paper", page_gold_paper),
     ("ashare", "A股 paper", page_ashare_paper),
     ("similar", "相似选股", page_similar),
+    ("boards", "板块指数", page_boards),
     ("kol", "KOL 评测", page_kol),
     ("genzhuang", "跟庄复盘", page_genzhuang),
 ]
