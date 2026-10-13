@@ -53,6 +53,14 @@ DB_PATH = RESULTS_DIR / "whaletrail.db"
 DATA_CACHE_DIR = DATA_ROOT / "data_cache"
 WATCHLIST_PATH = DATA_ROOT / "config" / "watchlist.yaml"
 CN_TZ = ZoneInfo("Asia/Shanghai")
+
+# Similar-page universe window, in calendar days.  Sized from the template's
+# own bar count so a long template still has a pool to recall from.  1200 days
+# is about 794 sessions and costs about 8.7s / 3.9GB peak on the 16GB mini;
+# 1800 would be 13.9s / 5.8GB and leaves too little for the two dashboard
+# processes plus Ollama.
+SIMILAR_WINDOW_MIN = 420
+SIMILAR_WINDOW_MAX = 1200
 KOL_ROSTER = [
     "feigeshuogushi", "415254141a", "sd145157", "carla121100",
     "fighterpromoter", "deelu179242", "oldk_gillis", "jimisenlin66474",
@@ -1145,19 +1153,34 @@ def page_boards_config() -> None:
     _show(styled, width="stretch")
     st.caption("成分表最多显示前 300 行；北交所或缺本地日线的成分会显示空行情。")
 
+def _similar_window_days(span_days: int) -> int:
+    """Calendar days to load for a template spanning *span_days*.
+
+    A template's own span is also roughly the history every candidate needs:
+    N sessions of template take about N / 0.67 calendar days, and candidates
+    are cut to their last N bars.  The 1.25 slack leaves room for halted
+    names.  Clamped so a very long template cannot pull the whole analysis DB
+    into the two dashboard processes.
+    """
+    need = int(span_days * 1.25) + 40
+    return max(SIMILAR_WINDOW_MIN, min(SIMILAR_WINDOW_MAX, need))
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _similarity_universe(
-    start: str | None = None,
+    window_days: int = 420,
     end: str | None = None,
 ) -> tuple[dict[str, dict[str, list]], dict[str, str], str, str | None]:
     """Aligned daily bars for the screen. Prefer baostock; never invent OHLC.
 
-    The fourth value is a dropped partial session date, or None.
+    *window_days* is how far back to load, in calendar days.  The page sizes
+    it from the template's own length, because every candidate is cut to its
+    last N bars and a template longer than the window leaves no pool at all.
+    The fourth return value is a dropped partial session date, or None.
     """
+    start = (date.today() - pd.Timedelta(days=int(window_days))).strftime("%Y-%m-%d")
     try:
         repo = Repository(DB_PATH)
-        if start is None and end is None:
-            start = (date.today() - pd.Timedelta(days=420)).strftime("%Y-%m-%d")
         bars = repo.daily_bars(start=start, end=end)
         names = repo.universe_names()
         repo.close()
@@ -1173,7 +1196,7 @@ def _similarity_universe(
             return bars, names, f"全市场 {len(bars)} 只 · baostock daily_kline · {rng}", dropped
     except Exception:
         pass
-    if start is not None or end is not None:
+    if start is not None:
         return {}, {}, "无 baostock daily_kline · 固定窗不可用（不拿 tvscreener 冒充日 K）", None
     try:
         items = [i for i in load_watchlist(WATCHLIST_PATH) if i.market == "china"]
@@ -1513,20 +1536,11 @@ def page_similar() -> None:
     book = st.selectbox("模板", labels, key="similar_book_demo")
     demo_key = by_label.get(book)
     locked = demo_key is not None
-    bars, names, _source_label, dropped_session = _similarity_universe()
-    all_codes = sorted(bars) if bars else []
-
-    def _label(code: str) -> str:
-        name = names.get(code) or ""
-        return f"{name} ({code})" if name else code
 
     if locked and st.session_state.get("_similar_book_applied") != demo_key:
         spec = DEMOS[demo_key]
         st.session_state["similar_scan_start"] = date.fromisoformat(spec["start"])
         st.session_state["similar_scan_end"] = date.fromisoformat(spec["end"])
-        if spec["symbol"] in all_codes:
-            st.session_state["similar_ref_pick"] = spec["symbol"]
-        st.session_state["_similar_book_applied"] = demo_key
     elif not locked:
         st.session_state["_similar_book_applied"] = None
     for _date_key, _date_default in (
@@ -1536,6 +1550,29 @@ def page_similar() -> None:
         fixed = _coerce_date(st.session_state.get(_date_key), _date_default)
         if st.session_state.get(_date_key) != fixed:
             st.session_state[_date_key] = fixed
+
+    # Size the universe fetch from the template's own span, before loading it.
+    pending_start = _coerce_date(st.session_state.get("similar_scan_start"), _cn_today() - timedelta(days=126))
+    pending_end = _coerce_date(st.session_state.get("similar_scan_end"), _cn_today())
+    span_days = max(1, (pending_end - pending_start).days)
+    window_days = _similar_window_days(span_days)
+
+    bars, names, _source_label, dropped_session = _similarity_universe(window_days=window_days)
+    all_codes = sorted(bars) if bars else []
+    window_start = (date.today() - pd.Timedelta(days=window_days)).strftime("%Y-%m-%d")
+
+    def _label(code: str) -> str:
+        name = names.get(code) or ""
+        return f"{name} ({code})" if name else code
+
+    # A demo locks its own code, so switching templates must re-point the
+    # picker.  The dates were set before the fetch; the code needs all_codes.
+    if locked and st.session_state.get("_similar_book_applied") != demo_key:
+        spec = DEMOS[demo_key]
+        if spec["symbol"] in all_codes:
+            st.session_state["similar_ref_pick"] = spec["symbol"]
+        st.session_state["_similar_book_applied"] = demo_key
+
     pick_options = all_codes or ["—"]
     if st.session_state.get("similar_ref_pick") not in pick_options:
         fallback = DEMOS["yuandong"]["symbol"]
@@ -1606,16 +1643,21 @@ def page_similar() -> None:
             st.caption("没有这只。")
             return
 
-    recent_start = (_cn_today() - timedelta(days=420)).isoformat()
     scan_input = bars
     deep: dict = {}
-    if ref not in scan_input or mark_start.isoformat() < recent_start:
+    if ref not in scan_input or mark_start.isoformat() < window_start:
         deep = _ref_deep_history(ref, mark_start.isoformat())
         if deep.get(ref):
             scan_input = {**bars, ref: deep[ref]}
     built = build_scan_pool(scan_input, ref, mark_start.isoformat(), mark_end.isoformat())
     if built is None:
-        st.caption("这段不足 10 个交易日。")
+        if span_days > SIMILAR_WINDOW_MAX:
+            st.warning(
+                f"这段约 {span_days} 个自然日，超过取数上限。"
+                f"候选池按每只股票自己最近 N 根对齐，请把起始日期收到 {SIMILAR_WINDOW_MAX} 天以内。"
+            )
+        else:
+            st.caption("这段不足 10 个交易日。")
         return
     template_bars, eligible, slice_n = built
     cand_end = max(
@@ -1631,6 +1673,12 @@ def page_similar() -> None:
         else:
             st.caption("这段没有换手，筹码图先不画。")
     st.caption(f"模板 {slice_n} 根 · {mark_start} 至 {mark_end}")
+    if len(eligible) <= 2:
+        st.warning(
+            f"候选池只有 {len(eligible)} 只 —— 模板比取数窗口长。"
+            f"这段约 {span_days} 天，{SIMILAR_WINDOW_MIN}–{SIMILAR_WINDOW_MAX} 天可用；"
+            "候选股按各自最近 N 根对齐，区间越长越只能看形态。"
+        )
 
     sig = (
         ref, mark_start.isoformat(), mark_end.isoformat(),
