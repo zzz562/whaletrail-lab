@@ -19,7 +19,12 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from whaletrail.chips import chip_histogram, distribution_stats
-from whaletrail.similarity import _last_is_st, pair_corr, pair_dtw
+from whaletrail.similarity import (
+    _last_is_st,
+    dtw_distances_batch,
+    normalize,
+    pair_corr,
+)
 
 DEFAULT_SCREEN_RECALL = 500
 
@@ -494,14 +499,28 @@ def screen_similar(
         return [], info
 
     recalled: list[tuple[str, float, Mapping[str, Sequence[float]]]] = []
+    # Recall in one batched DTW per distinct effective length.  Tail-aligning to
+    # the shorter series and *then* min-maxing is the same order pair_dtw uses,
+    # so batching only changes how the numbers are computed, not what they are.
+    groups: dict[int, list[tuple[str, Mapping[str, Sequence[float]], np.ndarray]]] = {}
     for code, bars in candidates.items():
         if exclude_st and _last_is_st(bars, None):
             continue
         close = _num(bars.get("close"))
         if close is None or close.size < 2:
             continue
-        dist = pair_dtw(t_close, close)
-        if np.isfinite(dist):
+        keep_n = int(min(t_close.size, close.size))
+        tail = np.nan_to_num(close[-keep_n:], nan=0.0)
+        groups.setdefault(keep_n, []).append((code, bars, tail))
+
+    for keep_n, members in groups.items():
+        t_tail = np.nan_to_num(t_close[-keep_n:], nan=0.0)
+        t_norm = normalize(t_tail)
+        matrix = np.vstack([normalize(row) for _, _, row in members])
+        distances = dtw_distances_batch(t_norm, matrix)
+        for (code, bars, _), dist in zip(members, distances):
+            if not np.isfinite(dist):
+                continue
             recalled.append((code, float(dist), bars))
     recalled.sort(key=lambda item: (item[1], item[0]))
     if not recalled:

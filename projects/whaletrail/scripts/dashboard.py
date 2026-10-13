@@ -54,13 +54,14 @@ DATA_CACHE_DIR = DATA_ROOT / "data_cache"
 WATCHLIST_PATH = DATA_ROOT / "config" / "watchlist.yaml"
 CN_TZ = ZoneInfo("Asia/Shanghai")
 
-# Similar-page universe window, in calendar days.  Sized from the template's
-# own bar count so a long template still has a pool to recall from.  1200 days
-# is about 794 sessions and costs about 8.7s / 3.9GB peak on the 16GB mini;
-# 1800 would be 13.9s / 5.8GB and leaves too little for the two dashboard
-# processes plus Ollama.
-SIMILAR_WINDOW_MIN = 420
-SIMILAR_WINDOW_MAX = 1200
+# Similar page template limits.  A template longer than a year is both slow to
+# recall (DTW grows with the square of the bar count) and meaningless to match:
+# candidates are cut to their own last N bars, so the longer the window the more
+# the "similarity" is coincidental shape.  The universe fetch window is derived
+# from the marked span and clamped below, so a year-long template still has a
+# full pool.
+SIMILAR_TEMPLATE_MAX_DAYS = 365
+SIMILAR_WINDOW_MIN_DAYS = 120
 KOL_ROSTER = [
     "feigeshuogushi", "415254141a", "sd145157", "carla121100",
     "fighterpromoter", "deelu179242", "oldk_gillis", "jimisenlin66474",
@@ -1154,16 +1155,14 @@ def page_boards_config() -> None:
     st.caption("成分表最多显示前 300 行；北交所或缺本地日线的成分会显示空行情。")
 
 def _similar_window_days(span_days: int) -> int:
-    """Calendar days to load for a template spanning *span_days*.
+    """Calendar days of universe to load for a template spanning *span_days*.
 
-    A template's own span is also roughly the history every candidate needs:
-    N sessions of template take about N / 0.67 calendar days, and candidates
-    are cut to their last N bars.  The 1.25 slack leaves room for halted
-    names.  Clamped so a very long template cannot pull the whole analysis DB
-    into the two dashboard processes.
+    Every candidate is cut to its own last N bars, so the template's span is
+    also the history the pool needs.  The 1.25 slack leaves room for halted
+    names and the 120-day floor keeps short templates on a usable pool.
     """
     need = int(span_days * 1.25) + 40
-    return max(SIMILAR_WINDOW_MIN, min(SIMILAR_WINDOW_MAX, need))
+    return max(SIMILAR_WINDOW_MIN_DAYS, need)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1555,7 +1554,11 @@ def page_similar() -> None:
     pending_start = _coerce_date(st.session_state.get("similar_scan_start"), _cn_today() - timedelta(days=126))
     pending_end = _coerce_date(st.session_state.get("similar_scan_end"), _cn_today())
     span_days = max(1, (pending_end - pending_start).days)
-    window_days = _similar_window_days(span_days)
+    over_cap = span_days > SIMILAR_TEMPLATE_MAX_DAYS
+    window_days = min(
+        _similar_window_days(span_days),
+        _similar_window_days(SIMILAR_TEMPLATE_MAX_DAYS),
+    )
 
     bars, names, _source_label, dropped_session = _similarity_universe(window_days=window_days)
     all_codes = sorted(bars) if bars else []
@@ -1649,15 +1652,16 @@ def page_similar() -> None:
         deep = _ref_deep_history(ref, mark_start.isoformat())
         if deep.get(ref):
             scan_input = {**bars, ref: deep[ref]}
+    if over_cap:
+        st.warning(
+            f"模板跨度约 {span_days} 天，超过一年（{SIMILAR_TEMPLATE_MAX_DAYS} 天）上限。"
+            "这段长度下候选股是按各自最近 N 根比形态，越长的区间越容易撞出巧合，"
+            "而且召回耗时随根数平方增长。请把起始日期收到一年以内再查。"
+        )
+        return
     built = build_scan_pool(scan_input, ref, mark_start.isoformat(), mark_end.isoformat())
     if built is None:
-        if span_days > SIMILAR_WINDOW_MAX:
-            st.warning(
-                f"这段约 {span_days} 个自然日，超过取数上限。"
-                f"候选池按每只股票自己最近 N 根对齐，请把起始日期收到 {SIMILAR_WINDOW_MAX} 天以内。"
-            )
-        else:
-            st.caption("这段不足 10 个交易日。")
+        st.caption("这段不足 10 个交易日。")
         return
     template_bars, eligible, slice_n = built
     cand_end = max(
@@ -1676,8 +1680,7 @@ def page_similar() -> None:
     if len(eligible) <= 2:
         st.warning(
             f"候选池只有 {len(eligible)} 只 —— 模板比取数窗口长。"
-            f"这段约 {span_days} 天，{SIMILAR_WINDOW_MIN}–{SIMILAR_WINDOW_MAX} 天可用；"
-            "候选股按各自最近 N 根对齐，区间越长越只能看形态。"
+            f"这段约 {span_days} 天，取数窗口 {window_days} 天。"
         )
 
     sig = (

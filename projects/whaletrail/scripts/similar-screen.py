@@ -22,11 +22,20 @@ sys.path.insert(0, str(ROOT))
 
 from whaletrail.data.baostock_source import to_baostock_code
 from whaletrail.context import cap_text, commentary, load_index_moves, name_context, sector_moves
-from whaletrail.screen import DEMOS, WEIGHT_PRESETS, screen_similar, trim_partial_session, window_brief
+from whaletrail.screen import (
+    DEMOS,
+    WEIGHT_PRESETS,
+    screen_similar,
+    trim_partial_session,
+    window_brief,
+)
 from whaletrail.similarity import build_scan_pool
 from whaletrail.storage.repository import Repository
 
 DB_PATH = ROOT / "results" / "whaletrail.db"
+# Same one-year ceiling the page enforces: recall cost grows with the square of
+# the bar count, and a longer window mostly buys coincidental shape matches.
+TEMPLATE_MAX_DAYS = 365
 
 
 def _jsonable(value):
@@ -89,6 +98,14 @@ def main() -> None:
             print(f"⚠️ {code} 只有 {len(ref_dates)} 根，不足 --window {args.window}")
             sys.exit(1)
         start, end = ref_dates[-args.window], ref_dates[-1]
+
+    span_days = (date.fromisoformat(end) - date.fromisoformat(start)).days
+    if span_days > TEMPLATE_MAX_DAYS:
+        print(
+            f"⚠️ 模板跨度 {span_days} 天，超过一年（{TEMPLATE_MAX_DAYS} 天）上限。"
+            "候选股按各自最近 N 根比形态，区间越长越容易撞出巧合，召回耗时也随根数平方增长。"
+        )
+        sys.exit(1)
 
     built = build_scan_pool(bars, code, start, end)
     if built is None:
