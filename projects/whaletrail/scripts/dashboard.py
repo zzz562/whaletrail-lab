@@ -1505,8 +1505,7 @@ def _feat_cell(feat: dict, key: str, digits: int = 2, scale: float = 1.0):
 def _template_choices() -> tuple[list[str], dict[str, str]]:
     labels: list[str] = []
     by_label: dict[str, str] = {}
-    for key in ("yuandong", "chaosheng"):
-        spec = DEMOS[key]
+    for key, spec in DEMOS.items():
         label = f"{spec['title']} （{spec['start']} 至 {spec['end']}）"
         labels.append(label)
         by_label[label] = key

@@ -58,6 +58,14 @@ DEMOS: dict[str, dict[str, str]] = {
         "start": "2026-03-07",
         "end": "2026-09-07",
     },
+    # The 精达 template is a full year, which is the longest span the screen
+    # accepts: 2025-03-25→2026-10-13 would be 567 days and is refused.
+    "jingda": {
+        "title": "精达股份",
+        "symbol": "sh.600577",
+        "start": "2025-10-13",
+        "end": "2026-10-13",
+    },
 }
 
 _GROUPS: dict[str, tuple[str, ...]] = {
