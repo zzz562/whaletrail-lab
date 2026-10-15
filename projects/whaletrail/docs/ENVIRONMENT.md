@@ -78,7 +78,8 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | `scripts/check-ashare-data.py` | A股数据完整性体检（最近 3 个交易日的日线覆盖率 + 基准指数）；`--daily` 时自己也推一条入库心跳 | Mac mini（手动；被每日状态调用） | venv、SQLite、SZSE 日历、`TG_BOT_TOKEN` |
 | `scripts/daily-status.py` | 每日数据状态汇总（A股判定 + 配置表 + 黄金日线天数 + 快照 + 常驻服务 + 最近班次结果）→ Telegram | Mac mini（cron 工作日 21:45） | venv、SQLite、launchctl、`TG_BOT_TOKEN` |
 | `scripts/fetch-board-members.py` | 板块/指数配置表（成分 + 权重）→ `board_members`：东财概念/行业/地域/其他 + 中证 7 条 + 国证 4 条指数 | Mac mini（cron 每周六 09:00；手动亦可） | venv、xlrd、直连（绕开系统代理，无需代理） |
-| `scripts/ashare-similar.py` | 全市场相似选股 CLI（K 召回 + 量/筹重排） | Mac mini（手动） | venv、SQLite `daily_kline` |
+| `scripts/similar-screen.py` | 相似选股 CLI（页面同一条 `screen_similar`：DTW 批量召回 + 七组特征距离；默认均衡、只看主板；`--keep-boards` / `--include-st` 关筛；`--demo yuandong\|chaosheng\|jingda`） | Mac mini（手动） | venv、SQLite `daily_kline` |
+| `scripts/ashare-similar.py` | 旧的相似选股 CLI（K 召回 + 量/筹重排，`retrieve_rank`；页面已不走这条） | Mac mini（手动） | venv、SQLite `daily_kline` |
 | `scripts/seed-ashare-history.py` | A股日线历史种子 | Mac mini（手动） | venv、tvdatafeed、代理 |
 | `scripts/watchlist-report.py` | watchlist Markdown 报表 | 任意（本地读 SQLite） | venv |
 | `scripts/dashboard.py` | Streamlit 看板。生产 launchd `ai.whaletrail-dashboard`（worktree，`:8766`）；预发 `ai.whaletrail-dashboard-stage`（lab，`:8768`） | Mac mini | venv、`WT_DATA_ROOT`（生产指向 lab 的 `results/`） |

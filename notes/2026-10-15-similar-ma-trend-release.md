@@ -67,6 +67,18 @@
 
 发布步骤仍是 `docs/DEPLOY.md` 里的生产 worktree：lab 的 `HEAD` 检出到 `~/Projects/whaletrail-prod`，`prod` 书签跟着这个提交，只重启 `ai.whaletrail-dashboard`。
 
+## 发版记录
+
+| 提交 | 内容 |
+|------|------|
+| `9215a27` | 取数窗口按模板跨度自适应（当晚只上预发） |
+| `d7ff2b6` | 模板跨度封顶一年 + 召回 DTW 改批处理 |
+| `9d80d49` | 精达股份 进模板列表 |
+| `cb74c54` | 均线与近期趋势进分数、默认只看主板、K 线补均线 |
+| `98ec5c9` | 这一篇发布记录 + 文档同步 |
+
+生产在这次之前停在 `96266d5`（2026-09-30 那一版），现在跑 `98ec5c9`。随这次一起改的文档：`DASHBOARD.md`（还写着两版之前的「量筹精排，默认偏筹码」）、`ARCHITECTURE.md`（模块说明）、`DATA_INVENTORY.md`（打分口径）、`ENVIRONMENT.md`（补 `similar-screen.py` 一行）、`SIMILAR_DEMOS.md`、`SCOPE.md` 决策 30 与 31。
+
 ## 还没做
 
 - DTW 仍是纯 NumPy。要再快一档得上带 C 后端的实现，`dtaidistance` 没装在 venv 里。
