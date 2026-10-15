@@ -280,27 +280,35 @@ def main() -> None:
         _stamp(f"抓取开始（预算 {args.max_minutes:g} 分钟，单次查询上限 {args.query_timeout}s）")
         source.login()
 
-        if args.codes:
-            codes = [(c.strip(), "") for c in args.codes.split(",") if c.strip()]
-            try:
-                _refresh_static(source, repo)
-            except Exception as exc:
-                print(f"静态快照失败（--codes 日 K 继续）: {exc}")
-        else:
-            print("查询 A 股基本资料 / 行业 / 指数成分…")
-            try:
-                basics = _refresh_static(source, repo)
-                codes = [
-                    (r["code"], r.get("name") or "")
-                    for r in basics
-                    if r.get("status") == "1"
-                ]
-            except Exception as exc:
-                print(f"stock_basic 失败，用库内上市名单: {exc}")
-                codes = repo.listed_universe()
-                if not codes:
-                    raise
-            print(f"日 K 标的: {len(codes)} 只（上市中）")
+        # Static snapshots (stock_basic/industry/constituents) have no socket
+        # timeout of their own; a half-closed baostock connection can block them
+        # forever.  Bound the whole static batch with the same signal alarm used
+        # by the daily-bar loop below, and fall back to the in-DB universe.
+        signal.setitimer(signal.ITIMER_REAL, args.query_timeout * 3)
+        try:
+            if args.codes:
+                codes = [(c.strip(), "") for c in args.codes.split(",") if c.strip()]
+                try:
+                    _refresh_static(source, repo)
+                except Exception as exc:
+                    print(f"静态快照失败（--codes 日 K 继续）: {exc}")
+            else:
+                print("查询 A 股基本资料 / 行业 / 指数成分…")
+                try:
+                    basics = _refresh_static(source, repo)
+                    codes = [
+                        (r["code"], r.get("name") or "")
+                        for r in basics
+                        if r.get("status") == "1"
+                    ]
+                except Exception as exc:
+                    print(f"stock_basic 失败，用库内上市名单: {exc}")
+                    codes = repo.listed_universe()
+                    if not codes:
+                        raise
+                print(f"日 K 标的: {len(codes)} 只（上市中）")
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
 
         start_floor = _parse_yyyymmdd(args.start) if args.start else DEFAULT_START
 

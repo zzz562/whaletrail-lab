@@ -74,7 +74,9 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | `scripts/sentiment.py` | X 情绪扫描 | Mac mini（cron） | X token、DeepSeek/Ollama、代理 |
 | `scripts/fetch-tvscreener-watchlist.py` | TradingView watchlist 快照 | Mac mini（cron/手动） | 直连 TV，无需代理 |
 | `scripts/ashare-paper.py` | A股低频率 paper（快照积累→日线→信号；交易日历+时段门禁） | Mac mini（cron/手动） | venv、tvscreener、SQLite、直连 SZSE（无需代理） |
-| `scripts/fetch-baostock-universe.py` | A股全市场日 K（OHLCV+turn/ST/PE/PB）+ 证监会行业分类 + 指数成分 + 基准指数日 K；单查询超时 + 整轮预算 + 并发锁 + 失败 Telegram 告警 | Mac mini（cron 工作日 16:30/20:00；手动亦可；首次加列后会自动重拉缺字段的旧 bar） | venv、baostock、直连（无需代理） |
+| `scripts/fetch-ashare.py` | A股多源取数 runner：`--phase fast`（东财全市场快照，15:10）/ `extras`（baostock 权威扩展字段+指数+静态，17:45）/ `fallback`（20:00 兜底）/ `verify`（15:35 体检）；读 `config/ashare_sources.yaml`，各阶段状态写 `results/fetch-status.json` | Mac mini（cron 工作日 15:10/15:35/17:45/20:00；手动亦可） | venv、requests+PySocks、baostock、直连或 VPS SOCKS |
+| `scripts/ashare-fetch-status.py` | A股取数状态探针：`--json` 输出最近 3 个交易日覆盖率 + 各阶段最后结果 + 是否健康，退出码 0/1 | Mac mini（手动 / Grok bot 调用） | venv、SQLite、SZSE 日历 |
+| `scripts/fetch-baostock-universe.py` | A股全市场日 K（OHLCV+turn/ST/PE/PB）+ 证监会行业分类 + 指数成分 + 基准指数日 K；单查询超时 + 静态快照批量超时 + 整轮预算 + 并发锁 + 失败 Telegram 告警 | Mac mini（被 `fetch-ashare.py --phase extras/fallback` 调用；手动亦可） | venv、baostock、直连（无需代理） |
 | `scripts/check-ashare-data.py` | A股数据完整性体检（最近 3 个交易日的日线覆盖率 + 基准指数）；`--daily` 时自己也推一条入库心跳 | Mac mini（手动；被每日状态调用） | venv、SQLite、SZSE 日历、`TG_BOT_TOKEN` |
 | `scripts/daily-status.py` | 每日数据状态汇总（A股判定 + 配置表 + 黄金日线天数 + 快照 + 常驻服务 + 最近班次结果）→ Telegram | Mac mini（cron 工作日 21:45） | venv、SQLite、launchctl、`TG_BOT_TOKEN` |
 | `scripts/fetch-board-members.py` | 板块/指数配置表（成分 + 权重）→ `board_members`：东财概念/行业/地域/其他 + 中证 7 条 + 国证 4 条指数 | Mac mini（cron 每周六 09:00；手动亦可） | venv、xlrd、直连（绕开系统代理，无需代理） |

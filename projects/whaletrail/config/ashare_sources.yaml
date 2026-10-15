@@ -1,0 +1,40 @@
+# A-share multi-source fetch layer.
+# Read by scripts/fetch-ashare.py and whaletrail/data/sources_config.py.
+#
+# Roles (no naive fallback — each column has one authority):
+#   fast    Eastmoney whole-market OHLCV snapshot, written right after close.
+#   extras  baostock authoritative extras (tradestatus/is_st/pe/pb) + indexes.
+#   bulk    optional Tushare whole-market daily by trade_date.
+
+sources:
+  eastmoney:
+    enabled: true
+    role: fast
+    egress: direct              # direct | vps
+    page_size: 100              # clist caps at 100 rows/page
+    max_pages: 60
+    request_delay_s: 0.6
+    retries: 4
+    timeout_s: 20
+    vps_proxy: socks5h://127.0.0.1:1080
+  baostock:
+    enabled: true
+    role: extras
+    timeout_s: 90
+    max_minutes: 90
+  tushare:
+    enabled: false              # optional; free tier needs a token
+    role: bulk
+    token_env: TUSHARE_TOKEN
+
+schedule:
+  fast: "15:10"
+  verify_early: "15:35"
+  extras: "17:45"
+  fallback: "20:00"
+
+completeness:
+  coverage: 0.95
+  days: 3
+
+alert: telegram
