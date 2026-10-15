@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from whaletrail.chips import chip_histogram, distribution_stats
+from whaletrail.context import board_of
 from whaletrail.similarity import (
     _last_is_st,
     dtw_distances_batch,
@@ -30,18 +31,21 @@ DEFAULT_SCREEN_RECALL = 500
 
 # Group weights sum to 1.  Chip distribution is the stage reading;
 # waveform similarity is already spent on recall and is not in here.
+# "ma" and "trend" carry real weight now: the 精达 template closes above its
+# short averages while the pool median sits below, and the old 0.05 let a name
+# with the wrong MA posture rank first anyway.
 WEIGHT_PRESETS: dict[str, dict[str, float]] = {
     "偏筹码": {
-        "chip": 0.50, "campaign": 0.15, "volume": 0.15,
-        "box": 0.10, "confirm": 0.05, "ma": 0.05,
+        "chip": 0.42, "campaign": 0.13, "volume": 0.13,
+        "box": 0.08, "confirm": 0.06, "trend": 0.08, "ma": 0.10,
     },
     "均衡": {
-        "chip": 0.30, "campaign": 0.20, "volume": 0.20,
-        "box": 0.15, "confirm": 0.10, "ma": 0.05,
+        "chip": 0.25, "campaign": 0.15, "volume": 0.15,
+        "box": 0.12, "confirm": 0.08, "trend": 0.12, "ma": 0.13,
     },
     "偏确认": {
-        "chip": 0.25, "campaign": 0.15, "volume": 0.30,
-        "box": 0.10, "confirm": 0.15, "ma": 0.05,
+        "chip": 0.20, "campaign": 0.12, "volume": 0.24,
+        "box": 0.08, "confirm": 0.12, "trend": 0.14, "ma": 0.10,
     },
 }
 
@@ -78,8 +82,15 @@ _GROUPS: dict[str, tuple[str, ...]] = {
     "volume": ("vol_climax", "vol_ma20", "turn"),
     "box": ("box_width", "chop", "er", "box_pos"),
     "confirm": ("ret1", "close_loc"),
-    "ma": ("ma7", "ma30", "ma55", "ma120", "all_under"),
+    # Short-horizon direction.  The MA gaps say where price sits; this says
+    # whether the last few bars are pushing the same way as the template.
+    "trend": ("ret3", "ret5", "ret10", "up_streak", "ma7_slope"),
+    "ma": ("ma7", "ma30", "ma55", "ma120", "all_under", "all_above"),
 }
+
+# Boards the screen refuses by default.  688/689 are 科创板 and 300/301 are
+# 创业板; the template rules in this line were built on main-board names.
+DEFAULT_EXCLUDE_BOARDS: tuple[str, ...] = ("科创板", "创业板")
 
 
 @dataclass
@@ -155,6 +166,47 @@ def _ma_gap(close: np.ndarray, n: int) -> float | None:
     if mean <= 0:
         return None
     return float(close[-1] / mean - 1.0)
+
+
+def _simple_return(close: np.ndarray, n: int) -> float | None:
+    """Return over the last *n* bars, close to close."""
+    if close.size < n + 1 or not np.isfinite(close[-1]) or close[-1] <= 0:
+        return None
+    past = close[-1 - n]
+    if not np.isfinite(past) or past <= 0:
+        return None
+    return float(close[-1] / past - 1.0)
+
+
+def _up_streak(close: np.ndarray, cap: int = 10) -> int:
+    """Consecutive higher closes ending on the last bar."""
+    run = 0
+    for k in range(1, min(cap + 1, close.size)):
+        a, b = close[-k], close[-k - 1]
+        if not (np.isfinite(a) and np.isfinite(b)) or a <= b:
+            break
+        run += 1
+    return run
+
+
+def _ma_slope(close: np.ndarray, n: int) -> float | None:
+    """Sign and size of the *n*-day average move: today's MA against 5 bars ago,
+    scaled by price so it compares across names and levels."""
+    if close.size < n + 5 or not np.isfinite(close[-1]) or close[-1] <= 0:
+        return None
+    now = close[-n:]
+    then = close[-n - 5 : -5]
+    if now.size < n or then.size < n:
+        return None
+    now_f = now[np.isfinite(now)]
+    then_f = then[np.isfinite(then)]
+    if now_f.size < n or then_f.size < n:
+        return None
+    now_ma = float(now_f.mean())
+    then_ma = float(then_f.mean())
+    if then_ma <= 0:
+        return None
+    return float((now_ma - then_ma) / close[-1])
 
 
 def _choppiness(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> float | None:
@@ -358,6 +410,14 @@ def describe_window(bars: Mapping[str, Sequence[float]]) -> dict[str, float | No
         return float(series[-1] / float(base.mean()))
 
     feat["vol_ma20"] = _ratio(volume, 20)
+    # Short-horizon direction: where the last few bars are going, and whether
+    # the 7-day average is being pulled up or down.  "顺" in the strategy note
+    # means these agree with the template, not that every bar closed green.
+    feat["ret3"] = _simple_return(close, 3)
+    feat["ret5"] = _simple_return(close, 5)
+    feat["ret10"] = _simple_return(close, 10)
+    feat["up_streak"] = float(_up_streak(close))
+    feat["ma7_slope"] = _ma_slope(close, 7)
     seg = slice(box_from, None)
     hh, ll, cc = high[seg], low[seg], close[seg]
     span = float(np.nanmax(hh) - np.nanmin(ll)) if hh.size else 0.0
@@ -371,6 +431,7 @@ def describe_window(bars: Mapping[str, Sequence[float]]) -> dict[str, float | No
         feat[f"ma{n}"] = _ma_gap(close, n)
     gaps = [feat[f"ma{n}"] for n in (7, 30, 55, 120)]
     feat["all_under"] = 1.0 if all(g is not None and g < 0 for g in gaps) else 0.0
+    feat["all_above"] = 1.0 if all(g is not None and g > 0 for g in gaps) else 0.0
     return feat
 
 
@@ -485,6 +546,7 @@ def screen_similar(
     recall_n: int = DEFAULT_SCREEN_RECALL,
     weights: Mapping[str, float] | None = None,
     exclude_st: bool = True,
+    exclude_boards: Sequence[str] | None = DEFAULT_EXCLUDE_BOARDS,
 ) -> tuple[list[ScreenHit], dict]:
     """Recall by close DTW, then rank the pool by feature distance to *template*.
 
@@ -492,16 +554,21 @@ def screen_similar(
     same contract as :func:`whaletrail.similarity.retrieve_rank`.  The
     template's own code may sit in *candidates*; callers drop it.
 
+    ``exclude_boards`` drops names by :func:`whaletrail.context.board_of`
+    label before recall.  Pass ``()`` to keep every board.
+
     Returns ``(hits, info)``.  ``info`` carries the weights used and the
     template's own feature vector (``template_features`` / ``template_stage``).
     """
     used = _normalize_weights(weights)
     t_close = _num(template.get("close"))
     template_features = describe_window(template)
+    blocked = set(exclude_boards or ())
     info = {
         "weights": used,
         "template_features": template_features,
         "template_stage": format_stage(template_features),
+        "excluded_boards": sorted(blocked),
     }
     if t_close is None or t_close.size < 2:
         return [], info
@@ -513,6 +580,8 @@ def screen_similar(
     groups: dict[int, list[tuple[str, Mapping[str, Sequence[float]], np.ndarray]]] = {}
     for code, bars in candidates.items():
         if exclude_st and _last_is_st(bars, None):
+            continue
+        if blocked and board_of(code) in blocked:
             continue
         close = _num(bars.get("close"))
         if close is None or close.size < 2:

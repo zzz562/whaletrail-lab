@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 from whaletrail.data.baostock_source import to_baostock_code
 from whaletrail.context import cap_text, commentary, load_index_moves, name_context, sector_moves
 from whaletrail.screen import (
+    DEFAULT_EXCLUDE_BOARDS,
     DEMOS,
     WEIGHT_PRESETS,
     screen_similar,
@@ -64,6 +65,11 @@ def main() -> None:
         help="Feature-group weights (default 均衡)",
     )
     parser.add_argument("--include-st", action="store_true")
+    parser.add_argument(
+        "--keep-boards",
+        action="store_true",
+        help="Do not drop 科创板 / 创业板 (the page keeps only the main board by default)",
+    )
     parser.add_argument("--json", dest="json_path", help="Write the full hit list to this path")
     parser.add_argument("--db", default=str(DB_PATH))
     args = parser.parse_args()
@@ -123,6 +129,7 @@ def main() -> None:
         recall_n=args.recall,
         weights=WEIGHT_PRESETS[args.preset],
         exclude_st=not args.include_st,
+        exclude_boards=() if args.keep_boards else DEFAULT_EXCLUDE_BOARDS,
     )
     elapsed = time.perf_counter() - t0
     hits = [h for h in hits if h.code != code]
@@ -156,9 +163,9 @@ def main() -> None:
     print(
         f"{'序':<4}{'召回':<6}{'代码':<12}{'名称':<10}{'属性':<6}{'体量':<6}{'市值':>8}"
         f"{'对上证':<6}{'对板块':<6}{'分数':>8}"
-        f"{'末峰':>6}{'量比':>8}"
+        f"{'末峰':>6}{'量比':>8}{'3日':>8}{'5日':>8}{'MA7':>8}{'MA55':>8}{'MA120':>8}"
     )
-    print("-" * 108)
+    print("-" * 150)
     shown_ctx = []
     for i, hit in enumerate(shown, start=1):
         f = hit.features
@@ -169,13 +176,19 @@ def main() -> None:
             val = feat.get(key)
             return "—" if val is None else f"{val:.{nd}f}"
 
+        def gap(key, feat=f):
+            val = feat.get(key)
+            return "—" if val is None else f"{val * 100:+.1f}%"
+
         print(
             f"{i:<4}{hit.recall_rank:<6}{hit.code:<12}{(names.get(hit.code) or '')[:8]:<10}"
             f"{(ctx.get('board') or '—'):<6}{(ctx.get('cap_band') or '—'):<6}"
             f"{cap_text(ctx.get('float_yi')):>8}{(ctx.get('vs_index') or '—'):<6}"
             f"{(ctx.get('vs_sector') or '—'):<6}{hit.score:8.3f}"
             f"{cell('end_n_peaks', 0):>6}{cell('vol_climax', 2):>8}"
+            f"{gap('ret3'):>8}{gap('ret5'):>8}{gap('ma7'):>8}{gap('ma55'):>8}{gap('ma120'):>8}"
         )
+    print("3日 / 5日 = 末三根、末五根的涨幅；MA7 / MA55 / MA120 = 收盘 / 均线 − 1。")
     print("\n点评（不改名次）")
     tfeat = info["template_features"]
     for i, (hit, ctx) in enumerate(zip(shown, shown_ctx), start=1):

@@ -372,22 +372,46 @@ def _volume_near(feat: Mapping, template: Mapping) -> bool:
 
 def _ma_sentence(feat: Mapping, template: Mapping) -> str:
     if _num(feat.get("all_under")) == 1.0:
-        return "MA7、MA30、MA55、MA120 都在价格上方。"
-    bits = []
-    for key, label in (("ma7", "MA7"), ("ma30", "MA30"), ("ma55", "MA55"), ("ma120", "MA120")):
-        val = _num(feat.get(key))
-        if val is None:
-            continue
-        if val >= 0:
-            bits.append(f"高于{label} {val:.1%}")
-        else:
-            bits.append(f"低于{label} {abs(val):.1%}")
-    text = ("价格" + "、".join(bits) + "。") if bits else "均线缺读数。"
-    if _ma_same_side(feat, template):
-        text += "短均在价格下、长均还在价格上，和蓝本同侧。"
-    elif _template_ma_split(template):
-        text += "均线位置和蓝本不同侧。"
+        text = "MA7、MA30、MA55、MA120 都在价格上方。"
+    else:
+        bits = []
+        for key, label in (("ma7", "MA7"), ("ma30", "MA30"), ("ma55", "MA55"), ("ma120", "MA120")):
+            val = _num(feat.get(key))
+            if val is None:
+                continue
+            if val >= 0:
+                bits.append(f"高于{label} {val:.1%}")
+            else:
+                bits.append(f"低于{label} {abs(val):.1%}")
+        text = ("价格" + "、".join(bits) + "。") if bits else "均线缺读数。"
+        if _ma_same_side(feat, template):
+            text += "短均在价格下、长均还在价格上，和蓝本同侧。"
+        elif _template_ma_split(template):
+            text += "均线位置和蓝本不同侧。"
+    text += _short_trend_clause(feat, template)
     return text
+
+
+def _short_trend_clause(feat: Mapping, template: Mapping) -> str:
+    """Last few bars' direction versus the template's.  Empty when unreadable."""
+    r3, r5 = _num(feat.get("ret3")), _num(feat.get("ret5"))
+    if r3 is None and r5 is None:
+        return ""
+    bits = []
+    if r3 is not None:
+        bits.append(f"3 日 {r3:+.1%}")
+    if r5 is not None:
+        bits.append(f"5 日 {r5:+.1%}")
+    text = "近几天" + "、".join(bits)
+    t3, t5 = _num(template.get("ret3")), _num(template.get("ret5"))
+    same3 = r3 is not None and t3 is not None and (r3 >= 0) == (t3 >= 0)
+    same5 = r5 is not None and t5 is not None and (r5 >= 0) == (t5 >= 0)
+    if (t3 is not None or t5 is not None):
+        if same3 and same5:
+            text += "，和蓝本末端同向"
+        elif (t3 is not None and not same3) or (t5 is not None and not same5):
+            text += "，和蓝本末端不同向"
+    return text + "。"
 
 
 def _template_ma_split(template: Mapping) -> bool:

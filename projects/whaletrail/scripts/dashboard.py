@@ -31,6 +31,7 @@ from whaletrail.context import (
     sector_moves,
 )
 from whaletrail.screen import (
+    DEFAULT_EXCLUDE_BOARDS,
     DEFAULT_SCREEN_RECALL,
     DEMOS,
     WEIGHT_PRESETS,
@@ -514,6 +515,32 @@ def _card_row(cards: list[dict], cols: int = 4) -> None:
 
 def _num_color(v: float) -> str:
     return "#4ade80" if v > 0 else ("#f87171" if v < 0 else "#8b98a9")
+
+
+def _trend_accent(value, reference) -> str | None:
+    """Green when a reading points the same way as the template's, red when it
+    points the other way, gold when either side is missing or flat."""
+    if value is None or reference is None:
+        return None
+    try:
+        v, r = float(value), float(reference)
+    except (TypeError, ValueError):
+        return None
+    if not (v == v and r == r):
+        return None
+    if v == 0 or r == 0 or (v > 0) != (r > 0):
+        return "#fbbf24"
+    return "#4ade80" if v > 0 else "#f87171"
+
+
+def _tnum(feat: dict, key: str, digits: int = 3) -> str:
+    val = (feat or {}).get(key)
+    if val is None:
+        return "—"
+    try:
+        return f"{float(val):+.{digits}f}"
+    except (TypeError, ValueError):
+        return "—"
 
 def _staleness_color(text: str) -> str:
     if "天" in text:
@@ -1232,6 +1259,43 @@ def _market_frame() -> tuple[dict[str, str], dict[str, dict[str, float]]]:
 
 _PAIR_SCALE = alt.Scale(range=["#e6b450", "#38bdf8"])
 _CHART_W = 980
+# MA colours read on the dark theme and stay clear of the red/green candles.
+_MA_COLORS = ("#e6b450", "#38bdf8", "#a78bfa", "#f472b6")
+_MA_PERIODS = (7, 30, 55, 120)
+
+
+def _ma_frame(dates: list, close: list, slice_n: int) -> pd.DataFrame:
+    """MA7/30/55/120 for the last *slice_n* bars, in long form.
+
+    Averages are taken on the full series and sliced afterwards, so the first
+    drawn bar already has a real MA120 instead of a mean of whatever few bars
+    fell inside the window.
+    """
+    n = int(slice_n)
+    if not dates or not close or len(dates) < 2:
+        return pd.DataFrame()
+    c = pd.to_numeric(pd.Series(close), errors="coerce")
+    if c.isna().all():
+        return pd.DataFrame()
+    d = pd.to_datetime(pd.Series(dates))
+    rows = []
+    for period in _MA_PERIODS:
+        if c.size < period:
+            continue
+        ma = c.rolling(period).mean()
+        tail_ma = ma.iloc[-n:]
+        tail_d = d.iloc[-n:]
+        rows.append(pd.DataFrame({
+            "trade_date": tail_d.to_numpy(),
+            f"ma{period}": tail_ma.to_numpy(),
+        }))
+    if not rows:
+        return pd.DataFrame()
+    out = rows[0]
+    for extra in rows[1:]:
+        out = out.merge(extra, on="trade_date", how="outer")
+    long = out.melt("trade_date", var_name="ma", value_name="value").dropna(subset=["value"])
+    return long
 
 
 def _ohlc_from_bars(bars: dict, slice_n: int) -> pd.DataFrame:
@@ -1263,8 +1327,10 @@ def _render_kline_panel(
     width: int = _CHART_W,
     mark_start: date | None = None,
     mark_end: date | None = None,
+    bars: dict | None = None,
+    slice_n: int | None = None,
 ) -> None:
-    """Daily K + volume. Own price axis. Optional yellow band = 圈定区间."""
+    """Daily K + volume + MA7/30/55/120. Own price axis. Optional yellow band."""
     if df.empty:
         st.info("这段没有日 K。")
         return
@@ -1287,6 +1353,23 @@ def _render_kline_panel(
         tooltip=tips,
     )
     layers = rules + candles
+    ma_long = (
+        _ma_frame(bars.get("trade_date") or [], bars.get("close") or [], slice_n)
+        if bars is not None and slice_n
+        else pd.DataFrame()
+    )
+    if not ma_long.empty:
+        ma_order = [f"ma{p}" for p in _MA_PERIODS if f"ma{p}" in set(ma_long["ma"])]
+        layers = layers + alt.Chart(ma_long).mark_line(strokeWidth=1.4).encode(
+            x="trade_date:T",
+            y=alt.Y("value:Q"),
+            color=alt.Color(
+                "ma:N",
+                scale=alt.Scale(domain=ma_order, range=list(_MA_COLORS[: len(ma_order)])),
+                legend=alt.Legend(title=None, orient="top", direction="horizontal"),
+            ),
+            tooltip=["ma:N", alt.Tooltip("value:Q", format=".2f")],
+        )
     if mark_start is not None and mark_end is not None:
         band = alt.Chart(pd.DataFrame({
             "x": [pd.Timestamp(mark_start)],
@@ -1616,7 +1699,7 @@ def page_similar() -> None:
                 horizontal=True,
                 key="similar_screen_preset",
             )
-            n1, n2, n3 = st.columns([1, 1, 1])
+            n1, n2 = st.columns([1, 1])
             with n1:
                 recall_n = st.number_input(
                     "召回池", min_value=20, max_value=500, value=DEFAULT_SCREEN_RECALL,
@@ -1624,13 +1707,19 @@ def page_similar() -> None:
                 )
             with n2:
                 top_n = st.number_input("显示", min_value=5, max_value=80, value=40, step=5, key="similar_top_n")
-            with n3:
+            b1, b2 = st.columns([1, 1])
+            with b1:
                 exclude_st = st.checkbox("排除 ST", value=True, key="similar_exclude_st")
+            with b2:
+                exclude_growth = st.checkbox(
+                    "只看主板（剔除科创/创业）", value=True, key="similar_exclude_growth",
+                )
             preview = st.radio(
                 "模板预览", ("日 K", "筹码", "K + 筹码"),
                 horizontal=True, key="similar_tpl_view",
             )
     weights = WEIGHT_PRESETS[preset]
+    scan_boards = DEFAULT_EXCLUDE_BOARDS if exclude_growth else ()
     if not bars:
         st.info("暂无行情。")
         return
@@ -1668,7 +1757,10 @@ def page_similar() -> None:
     )
 
     if preview in ("日 K", "K + 筹码"):
-        _render_kline_panel(_ohlc_from_bars(template_bars, slice_n), _label(ref))
+        _render_kline_panel(
+            _ohlc_from_bars(template_bars, slice_n), _label(ref),
+            bars=template_bars, slice_n=slice_n,
+        )
     if preview in ("筹码", "K + 筹码"):
         snap_ref = _chip_snapshot(template_bars, slice_n)
         if snap_ref is not None:
@@ -1684,7 +1776,7 @@ def page_similar() -> None:
 
     sig = (
         ref, mark_start.isoformat(), mark_end.isoformat(),
-        int(recall_n), preset, bool(exclude_st),
+        int(recall_n), preset, bool(exclude_st), tuple(scan_boards),
     )
     if clicked:
         t0 = time.perf_counter()
@@ -1695,6 +1787,7 @@ def page_similar() -> None:
                 recall_n=int(recall_n),
                 weights=weights,
                 exclude_st=exclude_st,
+                exclude_boards=scan_boards,
             )
         elapsed = time.perf_counter() - t0
         ranked = [m for m in ranked if m.code != ref]
@@ -1715,6 +1808,7 @@ def page_similar() -> None:
             "preset": preset,
             "weights": used_w,
             "exclude_st": bool(exclude_st),
+            "exclude_boards": list(scan_boards),
             "elapsed_s": round(elapsed, 2),
             "template_stage": info["template_stage"],
             "template_features": info["template_features"],
@@ -1791,6 +1885,12 @@ def page_similar() -> None:
             "偏度": _feat_cell(feat, "end_skew", 2),
             "离散": _feat_cell(feat, "end_std", 1, 100),
             "前峰量比": _feat_cell(feat, "vol_climax", 2),
+            "3日": _feat_cell(feat, "ret3", 1, 100),
+            "5日": _feat_cell(feat, "ret5", 1, 100),
+            "对MA7": _feat_cell(feat, "ma7", 1, 100),
+            "对MA55": _feat_cell(feat, "ma55", 1, 100),
+            "对MA120": _feat_cell(feat, "ma120", 1, 100),
+            "箱内": _feat_cell(feat, "box_pos", 2),
             "箱高": _feat_cell(feat, "box_width", 1, 100),
             "震荡": _feat_cell(feat, "chop", 1),
             "四线": None if under is None else ("全在价格下" if under == 1.0 else "未全在下"),
@@ -1828,6 +1928,11 @@ def page_similar() -> None:
         return "—" if val is None else f"{float(val):.{digits}f}"
 
     _sec(f"1v1 对照 · {_label(view_ref)}  vs  {_label(pick)}")
+    tfeat = (pl or {}).get("template_features") or {}
+    ma_same = None
+    t_under, p_under = tfeat.get("all_under"), feat.get("all_under")
+    if t_under is not None and p_under is not None:
+        ma_same = "同侧" if t_under == p_under else "不同侧"
     _card_row(
         [
             {"label": "分数", "value": f"{m_pick.score:.3f}", "sub": "越小越接近模板"},
@@ -1843,13 +1948,53 @@ def page_similar() -> None:
         ],
         cols=5,
     )
+    _card_row(
+        [
+            {
+                "label": "3 日",
+                "value": _fnum("ret3", 3),
+                "sub": f"模板 {_tnum(tfeat, 'ret3')}",
+                "accent": _trend_accent(feat.get("ret3"), tfeat.get("ret3")),
+            },
+            {
+                "label": "5 日",
+                "value": _fnum("ret5", 3),
+                "sub": f"模板 {_tnum(tfeat, 'ret5')}",
+                "accent": _trend_accent(feat.get("ret5"), tfeat.get("ret5")),
+            },
+            {
+                "label": "对 MA7",
+                "value": _fnum("ma7", 3),
+                "sub": f"模板 {_tnum(tfeat, 'ma7')}",
+                "accent": _trend_accent(feat.get("ma7"), tfeat.get("ma7")),
+            },
+            {
+                "label": "对 MA55",
+                "value": _fnum("ma55", 3),
+                "sub": f"模板 {_tnum(tfeat, 'ma55')}",
+                "accent": _trend_accent(feat.get("ma55"), tfeat.get("ma55")),
+            },
+            {
+                "label": "对 MA120",
+                "value": _fnum("ma120", 3),
+                "sub": f"模板 {_tnum(tfeat, 'ma120')}" + (f" · {ma_same}" if ma_same else ""),
+                "accent": _trend_accent(feat.get("ma120"), tfeat.get("ma120")),
+            },
+        ],
+        cols=5,
+    )
+    st.caption(
+        "绿=和模板同向，红=反了。均线差值 = 收盘 / 均线 − 1；模板的均线只取标记窗口内那几根。"
+    )
     _render_kline_panel(
         _ohlc_from_bars(view_bars.get(view_ref, {}), slice_n),
         f"模板 · {_label(view_ref)} · {pl.get('start') or '?'}→{pl.get('end') or '?'}",
+        bars=view_bars.get(view_ref, {}), slice_n=slice_n,
     )
     _render_kline_panel(
         _ohlc_from_bars(view_bars.get(pick, {}), slice_n),
         f"对照 · {_label(pick)} · 最近 {slice_n} 根（到 {pl.get('cand_end') or '—'}）",
+        bars=view_bars.get(pick, {}), slice_n=slice_n,
     )
     st.caption("横轴是窗口里第几个交易日，两边的日期不对齐。")
     _overlay_pair(
