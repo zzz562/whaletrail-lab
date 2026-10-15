@@ -12,9 +12,9 @@ whaletrail/
 ├── metrics/       收益/回撤/夏普/胜率/盈亏比（FIFO 计算 PnL）
 ├── reporting/     watchlist Markdown 报表
 ├── storage/       SQLite（runs / trades / snapshots / daily_kline / index_kline / ashare_*）
-├── similarity.py  收盘 DTW 召回 + 旧版换手 L1/筹码 EMD 重排（retrieve_rank；ashare-similar.py 仍走这条；rank_multi 仍保留）
-├── screen.py      相似选股现用打分：DTW 召回后按筹码/做盘/量/箱体/确认/均线到模板的距离排序（screen_similar）
-├── context.py     相似选股表上的背景：板块属性、流通市值档、当日相对上证和证监会行业。不进 screen_similar 的分数
+├── similarity.py  收盘 DTW 召回（dtw_distance 按反对角线整块算、dtw_distances_batch 全市场一次算完）+ 旧版换手 L1/筹码 EMD 重排（retrieve_rank；ashare-similar.py 仍走这条；rank_multi 仍保留）
+├── screen.py      相似选股现用打分：DTW 批量召回后按筹码/做盘/量/箱体/确认/近期趋势/均线到模板的距离排序（screen_similar）；默认剔除科创板与创业板
+├── context.py     相似选股表上的背景：板块属性、流通市值档、当日相对上证和证监会行业；`board_of` 也供筛板用。这些背景不进 screen_similar 的分数
 ├── chips.py       窗口内 CYQ 直方图 + 1 维 Wasserstein + 分布峰与矩（distribution_stats）
 └── indicators.py  共享指标（sma / atr / cross_signal）
 ```

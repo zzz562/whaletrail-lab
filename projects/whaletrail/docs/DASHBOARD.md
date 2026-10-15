@@ -30,7 +30,7 @@
 |----|--------|--------|
 | **黄金 Paper** | 黄金账：`results/backtest_*.json` 中 GLD `gold_sma` + `data_cache/GLD.parquet` 的买入持有 + `data_cache/SPY.parquet` 对照；金价对照：`GC=F` 日线，**只读自己的缓存文件**（`data_cache/GC=F.parquet` 或 `GC_F.parquet`）；5m/live：`results/paper_live_state.json`（仅观察）。 | 缺回测 / 缺缓存 / 缺 live 则该节空渲染；GC=F 缓存缺失则对照列为空/null，不拿 GLD 价格冒充。 |
 | **A股 Paper** | 仅 `results/ashare_paper_state.json`（15:30 日频 paper 账：tvscreener 快照 + 深交所官方日历）。**不放「观察 / 接近 / 触发」**，不放黄金矿股。 | 缺 state 则空渲染，不编仓位与成交。 |
-| **相似选股** | SQLite `daily_kline`。圈定的日期**只切模板股**（那段历史就是 demo 波形和筹码）；候选股一律取各自**最近同根数**交易日（尾部=最新交易日），比形状不比日期。K 线召回 → 量筹精排（默认偏筹码）。改条件后要点金色按钮。结果不因改模板搜索而消失。`logs/similar-scan.log` 记生产上的每次扫描（含候选锚点日 `cand_end`）。预发写 `logs/similar-scan.stage.log`。 | 无历史则提示跑 `fetch-baostock-universe.py`。无 turn 则筹码空。 |
+| **相似选股** | SQLite `daily_kline`。圈定的日期**只切模板股**（那段历史就是 demo 波形和筹码），且跨度上限 **365 天**，超了直接拒绝并说明；候选股一律取各自**最近同根数**交易日（尾部=最新交易日），比形状不比日期。取数窗口按模板跨度自适应。K 线 DTW 批量召回 → 池内按**七组**读数到模板的距离排序，默认**均衡**（筹码 / 做盘 / 量 / 箱体 / 末端 / 近期趋势 / 均线 = .25 / .15 / .15 / .12 / .08 / .12 / .13）。默认**只看主板**，科创板与创业板在召回前丢掉。K 线图画 MA7/30/55/120。改条件后要点金色按钮。结果不因改模板搜索而消失。`logs/similar-scan.log` 记生产上的每次扫描（含候选锚点日 `cand_end` 与 `exclude_boards`）。预发写 `logs/similar-scan.stage.log`。 | 无历史则提示跑 `fetch-baostock-universe.py`。无 turn 则筹码空。模板超一年或候选池塌到 ≤2 只时给提示，不静默空榜。 |
 | **KOL 评测** | 冻结 18 个 A 股荐股账号名册 + `results/` 里已存的荐股/事后对照（如 `kol_eval*.json`）。**不是跟庄。** 不调 live X API，不用黄金情绪 JSON 冒充评测。 | 无存储评测 → 空表，不编准确率。 |
 | **跟庄复盘** | 仅现有 A 股 watchlist（含黄金矿股）。标签只允许「观察 / 接近 / 触发」，来自已存结果（若有）。日 K 来自 baostock `daily_kline` 的**已收盘**复权 bar。tvscreener 快照不是已完成日线。 | 无已收盘日 K / 无已存标签 → 空或 null，不编 OHLC、不新建 `yin-right.json`。 |
 
