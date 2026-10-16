@@ -80,7 +80,7 @@ def collect(db: str) -> tuple[list[str], list[str], list[str]]:
     info: list[str] = []
 
     # ── A股（复用体检脚本的判定）────────────────────────────────
-    rc, out = _run([sys.executable, "scripts/check-ashare-data.py", "--no-alert", "--daily"])
+    rc, out = _run([sys.executable, "scripts/check-ashare-data.py", "--no-alert", "--daily", "--mode", "full"])
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     first = lines[0] if lines else ""
     if rc == 0:

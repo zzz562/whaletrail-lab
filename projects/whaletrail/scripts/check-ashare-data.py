@@ -58,7 +58,15 @@ def main() -> int:
     parser.add_argument("--db", default=str(DB_PATH), help="SQLite path")
     parser.add_argument("--days", type=int, default=3, help="trading days to verify (default 3)")
     parser.add_argument(
-        "--coverage", type=float, default=0.95, help="min stored/universe ratio (default 0.95)"
+        "--coverage", type=float, default=None,
+        help="min stored/universe ratio (default 0.95; --mode full 默认 0.99)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["legacy", "codes", "full"],
+        default="legacy",
+        help="codes=只查代码覆盖（15:35 收盘快照用）；full=代码≥99%%+tradestatus 无空+指数齐全；"
+        "legacy=旧口径（覆盖+指数）",
     )
     parser.add_argument("--no-alert", action="store_true", help="print only, never push")
     parser.add_argument(
@@ -71,6 +79,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.coverage is None:
+        args.coverage = 0.99 if args.mode == "full" else 0.95
     now = datetime.now(CN_TZ)
     today = date.fromisoformat(args.as_of) if args.as_of else now.date()
     calendar = TradingCalendar()
@@ -100,6 +110,14 @@ def main() -> int:
                 (since,),
             ).fetchall()
         }
+        null_rows = {
+            r["trade_date"]: r["n"]
+            for r in repo.conn.execute(
+                "SELECT trade_date, COUNT(*) AS n FROM daily_kline"
+                " WHERE trade_date >= ? AND tradestatus IS NULL GROUP BY trade_date",
+                (since,),
+            ).fetchall()
+        }
         stock_max = repo.conn.execute(
             "SELECT COALESCE(MAX(trade_date), '-') FROM daily_kline"
         ).fetchone()[0]
@@ -119,14 +137,16 @@ def main() -> int:
             n = stock_rows.get(key, 0)
             if n < floor:
                 problems.append(f"日线 {key}：{n}/{listed} 只（低于 {args.coverage:.0%} 门槛）")
+            if args.mode == "full" and null_rows.get(key, 0):
+                problems.append(f"日线 {key}：{null_rows[key]} 只 tradestatus 为空（baostock 字段未到）")
             m = index_rows.get(key, 0)
-            if m < len(BENCH_INDEXES):
+            if args.mode != "codes" and m < len(BENCH_INDEXES):
                 problems.append(f"基准指数 {key}：{m}/{len(BENCH_INDEXES)} 条缺失")
 
     if problems:
         text = "\n".join(
             [
-                f"⚠️ A股数据不完整（{now:%Y-%m-%d %H:%M}）",
+                f"⚠️ A股数据不完整（{now:%Y-%m-%d %H:%M} · 口径 {args.mode}）",
                 *[f"• {p}" for p in problems],
                 f"最近写入：daily_kline {stock_max} / index_kline {index_max}",
                 "排查：tail -50 logs/fetch-baostock.log",

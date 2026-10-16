@@ -40,7 +40,11 @@ def _now() -> str:
     return datetime.now(CN_TZ).isoformat(timespec="seconds")
 
 
+_STATUS_WRITTEN: set[str] = set()
+
+
 def write_status(phase: str, ok: bool, rows: int, failures: int, elapsed: float, note: str = "") -> None:
+    _STATUS_WRITTEN.add(phase)
     record = {
         "phase": phase,
         "ok": ok,
@@ -150,6 +154,15 @@ def phase_extras(cfg: dict, label: str) -> None:
     ok = proc.returncode == 0
     write_status(label, ok, -1, 0 if ok else 1, time.monotonic() - started, f"rc={proc.returncode}")
     print(f"{label}: rc={proc.returncode}", flush=True)
+    if label == "fallback":
+        # Last shift of the day: fill whatever is still missing (today + last 5 days).
+        bf = [
+            str(ROOT / ".venv" / "bin" / "python"),
+            str(ROOT / "scripts" / "backfill-ashare.py"),
+            "--days", "5", "--include-today",
+        ]
+        rc = subprocess.run(bf, cwd=ROOT).returncode
+        print(f"fallback→backfill: rc={rc}", flush=True)
 
 
 def phase_verify(cfg: dict) -> None:
@@ -159,7 +172,7 @@ def phase_verify(cfg: dict) -> None:
         str(ROOT / ".venv" / "bin" / "python"),
         str(ROOT / "scripts" / "check-ashare-data.py"),
         "--days", str(days),
-        "--no-alert",
+        "--mode", "codes",  # 15:35: baostock 字段/指数还没到，只按代码覆盖告警
     ]
     proc = subprocess.run(cmd, cwd=ROOT)
     ok = proc.returncode == 0
@@ -172,6 +185,25 @@ def main() -> None:
     parser.add_argument("--phase", required=True, choices=["fast", "extras", "fallback", "verify"])
     args = parser.parse_args()
     cfg = load_config()
+    import signal
+
+    def _on_term(signum, frame):  # noqa: ARG001
+        raise RuntimeError(f"killed by signal {signum}")
+
+    signal.signal(signal.SIGTERM, _on_term)
+    started = time.monotonic()
+    try:
+        _run_phase(cfg, args)
+    except BaseException as exc:
+        if args.phase not in _STATUS_WRITTEN:
+            write_status(args.phase, False, 0, 1, time.monotonic() - started,
+                         f"crash: {type(exc).__name__}: {exc}"[:300])
+        raise
+    if args.phase not in _STATUS_WRITTEN:
+        write_status(args.phase, False, 0, 1, time.monotonic() - started, "no status written")
+
+
+def _run_phase(cfg: dict, args) -> None:
     if args.phase in ("extras", "fallback"):
         phase_extras(cfg, args.phase)
     elif args.phase == "fast":

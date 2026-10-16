@@ -50,7 +50,50 @@ from whaletrail.storage.repository import Repository
 
 DB_PATH = ROOT / "results" / "whaletrail.db"
 LOCK_PATH = ROOT / "results" / ".fetch-baostock.lock"
-DEFAULT_START = date(2015, 1, 1)  # matches ValarmClub's default history floor
+DEFAULT_START = date(2015, 1, 1)
+# Session lost / socket broken: re-login and retry instead of failing the rest.
+RELOGIN_CODES = ("10001001", "10002007")
+
+
+def _needs_relogin(text: str) -> bool:
+    return any(c in text for c in RELOGIN_CODES) or "Connection reset" in text or "未登录" in text
+
+
+def _relogin(source: BaostockSource) -> bool:
+    """Drop the (possibly dead) session and log in again; False if login fails."""
+    try:
+        source.logout()
+    except Exception:
+        pass
+    source._logged_in = False
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 60)
+        source.login()
+        return True
+    except Exception as exc:
+        _stamp(f"重新登录失败：{exc}")
+        source._logged_in = False
+        return False
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
+
+def _login_with_retry(source: BaostockSource, attempts: int) -> None:
+    """Initial login with backoff (30s, 60s, 120s ...): 17:00-ish resets are common."""
+    for i in range(1, attempts + 1):
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 60)
+            source.login()
+            return
+        except Exception as exc:
+            source._logged_in = False
+            if i == attempts:
+                raise
+            wait = 30 * 2 ** (i - 1)
+            _stamp(f"登录失败（第 {i}/{attempts} 次）：{exc}；{wait}s 后重试")
+            time.sleep(wait)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)  # matches ValarmClub's default history floor
 
 
 class QueryTimeout(Exception):
@@ -239,10 +282,19 @@ def main() -> None:
         "--fail-threshold", type=int, default=300, help="单只失败超过该值时告警（默认 300）"
     )
     parser.add_argument(
-        "--retry-passes", type=int, default=1, help="单只失败后的重试轮数（默认 1，0 = 不重试）"
+        "--retry-passes", type=int, default=3, help="单只失败后的重试轮数（默认 3，0 = 不重试）"
     )
     parser.add_argument(
-        "--retry-sleep", type=float, default=60.0, help="重试前等待秒数（默认 60）"
+        "--retry-sleep", type=float, default=None,
+        help="固定重试等待秒数（默认不用，按 --retry-backoff）",
+    )
+    parser.add_argument(
+        "--retry-backoff", default="5,15,30",
+        help="各轮重试前等待分钟数，逗号分隔（默认 5,15,30；超出预算则不等直接收尾）",
+    )
+    parser.add_argument("--login-attempts", type=int, default=4, help="首次登录尝试次数（默认 4）")
+    parser.add_argument(
+        "--skip-static", action="store_true", help="跳过静态表刷新（补数用；无 --codes 时用库内名单）"
     )
     parser.add_argument(
         "--abort-fail-ratio",
@@ -278,7 +330,7 @@ def main() -> None:
     deadline = started + args.max_minutes * 60
     try:
         _stamp(f"抓取开始（预算 {args.max_minutes:g} 分钟，单次查询上限 {args.query_timeout}s）")
-        source.login()
+        _login_with_retry(source, args.login_attempts)
 
         # Static snapshots (stock_basic/industry/constituents) have no socket
         # timeout of their own; a half-closed baostock connection can block them
@@ -286,7 +338,14 @@ def main() -> None:
         # by the daily-bar loop below, and fall back to the in-DB universe.
         signal.setitimer(signal.ITIMER_REAL, args.query_timeout * 3)
         try:
-            if args.codes:
+            if args.skip_static:
+                codes = (
+                    [(c.strip(), "") for c in args.codes.split(",") if c.strip()]
+                    if args.codes
+                    else repo.listed_universe()
+                )
+                print(f"跳过静态表 · 日 K 标的 {len(codes)} 只")
+            elif args.codes:
                 codes = [(c.strip(), "") for c in args.codes.split(",") if c.strip()]
                 try:
                     _refresh_static(source, repo)
@@ -371,8 +430,22 @@ def main() -> None:
             failed_codes.discard(code)
             return "ok"
 
+        relogins = 0
+
+        def fetch_with_relogin(code: str) -> str:
+            """One retry after a fresh login when the session/socket died."""
+            nonlocal relogins
+            res = fetch_and_save(code)
+            if res == "failed" and _needs_relogin(error_msgs.get(code, "") + str(
+                source.failures[-1].get("error_code", "") if source.failures else ""
+            )):
+                relogins += 1
+                if _relogin(source):
+                    res = fetch_and_save(code)
+            return res
+
         for idx, (code, _name) in enumerate(codes, start=1):
-            fetch_and_save(code)
+            fetch_with_relogin(code)
             if idx % 200 == 0:
                 print(
                     f"  进度 {idx}/{len(codes)} · 写入 bar {total_new} · 补字段 {refill_n}"
@@ -393,24 +466,38 @@ def main() -> None:
                 break
 
         still_failed = set(failed_codes)
+        backoff = [float(x) * 60 for x in args.retry_backoff.split(",") if x.strip()] or [60.0]
         for attempt in range(1, max(0, args.retry_passes) + 1):
             if not still_failed or time.monotonic() > deadline:
                 break
-            _stamp(f"重试第 {attempt} 轮：{len(still_failed)} 只（先等 {args.retry_sleep:g}s）")
-            time.sleep(args.retry_sleep)
+            wait = (
+                args.retry_sleep
+                if args.retry_sleep is not None
+                else backoff[min(attempt, len(backoff)) - 1]
+            )
+            # keep ~2 min per 100 codes for the pass itself inside the budget
+            need = wait + 120 * (len(still_failed) / 100 + 1)
+            if time.monotonic() + need > deadline:
+                wait = max(0.0, deadline - time.monotonic() - 120 * (len(still_failed) / 100 + 1))
+                if wait <= 0:
+                    _stamp(f"预算不足，跳过第 {attempt} 轮重试（{len(still_failed)} 只留给补数班）")
+                    break
+            _stamp(f"重试第 {attempt} 轮：{len(still_failed)} 只（先等 {wait:g}s，重新登录）")
+            time.sleep(wait)
+            _relogin(source)
             retry_list = sorted(still_failed)
             still_failed = set()
             for code in retry_list:
                 if time.monotonic() > deadline:
                     still_failed.update(retry_list[retry_list.index(code):])
                     break
-                if fetch_and_save(code) == "failed":
+                if fetch_with_relogin(code) == "failed":
                     still_failed.add(code)
             _stamp(f"重试第 {attempt} 轮结束：仍失败 {len(still_failed)} 只")
 
         _stamp(
             f"完成：{len(codes)} 只，写入 {total_new} 行（其中补字段 {refill_n} 只）· "
-            f"重试后仍失败 {len(still_failed)} 只（失败尝试 {len(failures)} 次）· 最新 {newest or '-'}"
+            f"重试后仍失败 {len(still_failed)} 只（失败尝试 {len(failures)} 次）· 重新登录 {relogins} 次 · 最新 {newest or '-'}"
         )
 
         # Benchmark index daily bars → index_kline (same window/incremental rules).
@@ -429,14 +516,28 @@ def main() -> None:
                 idx_end = today
             if idx_start > idx_end:
                 continue
-            try:
-                signal.setitimer(signal.ITIMER_REAL, args.query_timeout)
-                df = source.fetch_index_daily(code, idx_start, idx_end)
-            except Exception as exc:  # 单条指数失败不再中断整轮
-                idx_failures.append(f"{code}: {exc}")
+            df = None
+            last_exc: Exception | None = None
+            for idx_try in range(3):  # 指数只有 8 条：失败就重新登录再试，最多 3 次
+                before_f = len(source.failures)
+                try:
+                    signal.setitimer(signal.ITIMER_REAL, args.query_timeout)
+                    df = source.fetch_index_daily(code, idx_start, idx_end)
+                    if len(source.failures) > before_f:
+                        raise RuntimeError(source.failures[-1].get("error_msg") or "error")
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    df = None
+                finally:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                if idx_try < 2:
+                    time.sleep(10 * (idx_try + 1))
+                    _relogin(source)
+            if last_exc is not None or df is None:
+                idx_failures.append(f"{code}: {last_exc}")
                 continue
-            finally:
-                signal.setitimer(signal.ITIMER_REAL, 0)
 
             if df.empty:
                 continue
