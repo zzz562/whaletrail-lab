@@ -1,0 +1,304 @@
+# 擂台名册。入赛日之前的帖子不记成绩。
+# 2026-10-13 起含上周回放：截单时间用帖子自己的发布时间。
+joined_on: "2026-10-13"
+participants:
+  - handle: grok
+    name: "Grok"
+    kind: grok
+  - handle: feigeshuogushi
+    name: "飞哥说故事"
+    kind: kol
+  - handle: 415254141a
+    name: "415254141a"
+    kind: kol
+  - handle: sd145157
+    name: "玄学悟道"
+    kind: kol
+  - handle: carla121100
+    name: "开心果爱炒股"
+    kind: kol
+  - handle: fighterpromoter
+    name: "A股寻龙小师妹"
+    kind: kol
+  - handle: deelu179242
+    name: "deelu179242"
+    kind: kol
+  - handle: oldk_gillis
+    name: "oldk_gillis"
+    kind: kol
+  - handle: jimisenlin66474
+    name: "jimisenlin66474"
+    kind: kol
+  - handle: todo_seguridad
+    name: "todo_seguridad"
+    kind: kol
+  - handle: snake_w
+    name: "戒色交易员"
+    kind: kol
+  - handle: 1044669280a
+    name: "1044669280a"
+    kind: kol
+  - handle: lilratchetgurl
+    name: "lilratchetgurl"
+    kind: kol
+  - handle: bbloveu7777
+    name: "bbloveu7777"
+    kind: kol
+  - handle: eliasvancequant
+    name: "Elias Vance"
+    kind: kol
+  - handle: archdeng007
+    name: "爆量狙击手"
+    kind: kol
+  - handle: barber_mae68154
+    name: "barber_mae68154"
+    kind: kol
+  - handle: aw3ff_
+    name: "aw3ff_"
+    kind: kol
+  - handle: agucdx
+    name: "agucdx"
+    kind: kol
+  - handle: aigoldwsl9
+    name: "aigoldwsl9"
+    kind: kol
+  - handle: moniquebai57209
+    name: "moniquebai57209"
+    kind: kol
+  - handle: edgarzepedatava
+    name: "edgarzepedatava"
+    kind: kol
+  - handle: 0219_yuuuuuuui
+    name: "老俊涅槃记"
+    kind: kol
+  - handle: 0327ogu1
+    name: "统帅老义"
+    kind: kol
+  - handle: 0xhui888
+    name: "0xHui（重生版）"
+    kind: kol
+  - handle: 18xiaoyouzi
+    name: "擒牛刺客(A股龙头刺客)"
+    kind: kol
+  - handle: 2017xxtt
+    name: "xxtt2017"
+    kind: kol
+  - handle: 28ecef220d8546c
+    name: "股市猴哥"
+    kind: kol
+  - handle: 44melonboy
+    name: "沧澜股客"
+    kind: kol
+  - handle: 5jgkhbonfg90216
+    name: "唐朔"
+    kind: kol
+  - handle: 9andrey9
+    name: "Andrey Gorshkov"
+    kind: kol
+  - handle: _eminrecber
+    name: "Emin Recber"
+    kind: kol
+  - handle: _qkomari
+    name: "_Q"
+    kind: kol
+  - handle: abdulra87606895
+    name: "炒股十三妹"
+    kind: kol
+  - handle: abdulra88856295
+    name: "抓板小鱼🐟"
+    kind: kol
+  - handle: afacome
+    name: "阿发"
+    kind: kol
+  - handle: agufupan
+    name: "Agu 实时复盘"
+    kind: kol
+  - handle: albertolosada20
+    name: "清川"
+    kind: kol
+  - handle: alfonsxh
+    name: "Alfons"
+    kind: kol
+  - handle: amada6000
+    name: "逐龙论市"
+    kind: kol
+  - handle: ambaris10674614
+    name: "炒股大杨"
+    kind: kol
+  - handle: amynewsmpb
+    name: "黑马唐哥"
+    kind: kol
+  - handle: anakin0811
+    name: "周期观局"
+    kind: kol
+  - handle: askmoreais
+    name: "AskMoreAIs"
+    kind: kol
+  - handle: aystxdlzfhj
+    name: "大道至简｜全球资产配置"
+    kind: kol
+  - handle: baishuishanren
+    name: "白水山人"
+    kind: kol
+  - handle: bhanitadeka4
+    name: "炒股不吵架"
+    kind: kol
+  - handle: bkdgiffug
+    name: "lumxss"
+    kind: kol
+  - handle: bmcj888
+    name: "北美炒家"
+    kind: kol
+  - handle: boytaiping_2
+    name: "麒麟77"
+    kind: kol
+  - handle: breakevenbbs
+    name: "回本吧！"
+    kind: kol
+  - handle: casadacariocae
+    name: "深南路| 老陈"
+    kind: kol
+  - handle: chenfacai0
+    name: "陈发财"
+    kind: kol
+  - handle: chinasmpb
+    name: "司马平邦"
+    kind: kol
+  - handle: clarkhospelhorn
+    name: "股市小韭菜"
+    kind: kol
+  - handle: cludiomoreira13
+    name: "A股超短菲姐"
+    kind: kol
+  - handle: cnfinancewatch
+    name: "华尔街观察 Xtrader"
+    kind: kol
+  - handle: cobraykt24
+    name: "A股贝勒爷"
+    kind: kol
+  - handle: ddebdoedoke
+    name: "AI聊天APP"
+    kind: kol
+  - handle: designerjoelv
+    name: "小舞爱理财"
+    kind: kol
+  - handle: douglas1452369
+    name: "A股守盘人"
+    kind: kol
+  - handle: elayne_weddings
+    name: "市场观察员"
+    kind: kol
+  - handle: eloisetsnc
+    name: "Eloise"
+    kind: kol
+  - handle: elowenodik
+    name: "A股热点拆解局"
+    kind: kol
+  - handle: fly2_1000000u
+    name: "从0还在爬上100wu"
+    kind: kol
+  - handle: fututurabbit
+    name: "付图图 🐰"
+    kind: kol
+  - handle: gaoren33
+    name: "高泽"
+    kind: kol
+  - handle: garryxbtc
+    name: "黑手Garry"
+    kind: kol
+  - handle: gejucaijing
+    name: "格局财经"
+    kind: kol
+  - handle: gorggogo10
+    name: "股先锋"
+    kind: kol
+  - handle: gpsma2025
+    name: "阴阳行者-おんみょうぎょうじゃ-Yin Yang Wayfarer"
+    kind: kol
+  - handle: gracker_gao
+    name: "Gracker"
+    kind: kol
+  - handle: guyisheng1
+    name: "股易生"
+    kind: kol
+  - handle: gylq520
+    name: "孤桜ETH"
+    kind: kol
+  - handle: hanqing1120
+    name: "汉卿 | hanqing"
+    kind: kol
+  - handle: haochenv2
+    name: "Hao Chen"
+    kind: kol
+  - handle: happy_xiyue
+    name: "惜月"
+    kind: kol
+  - handle: hdchengzhu
+    name: "混沌城主"
+    kind: kol
+  - handle: hiply0625
+    name: "金融刀剑【互关✨️必回】"
+    kind: kol
+  - handle: huashetou
+    name: "花舌头"
+    kind: kol
+  - handle: hzw90141984
+    name: "hz w🇨🇳"
+    kind: kol
+  - handle: ixyue29
+    name: "智者等抄底"
+    kind: kol
+  - handle: jamesxu1982
+    name: "XxX"
+    kind: kol
+  - handle: jasonz0830
+    name: "Carbon-life碳基生物(DMs open)"
+    kind: kol
+  - handle: jbooker7269
+    name: "A股一姐"
+    kind: kol
+  - handle: jmlx2008
+    name: "冰糖不是糖"
+    kind: kol
+  - handle: joeyip7
+    name: "Joe Yip"
+    kind: kol
+  - handle: john0gage
+    name: "gage chiang"
+    kind: kol
+  - handle: jtl19971224
+    name: "超短明哥|🐦Bird"
+    kind: kol
+  - handle: jwaher49783608
+    name: "风向标小李"
+    kind: kol
+  - handle: jxuliping
+    name: "Liping Jxu"
+    kind: kol
+  - handle: kikoaifenxi
+    name: "爱理财的kiko"
+    kind: kol
+  - handle: kkingzgl
+    name: "Kking"
+    kind: kol
+  - handle: kkwin2025
+    name: "krex"
+    kind: kol
+  - handle: kongkongda5588
+    name: "空空道人02"
+    kind: kol
+  - handle: lefeiren129
+    name: "小楽子"
+    kind: kol
+  - handle: leolewoo
+    name: "橘子姐"
+    kind: kol
+  - handle: caolei1
+    name: "曹山石"
+    kind: kol
+  - handle: lfq3524
+    name: "StriveLiang"
+    kind: kol
+  - handle: lg_hkstock
+    name: "浪哥投研"
+    kind: kol

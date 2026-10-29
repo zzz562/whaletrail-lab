@@ -12,6 +12,7 @@ Tables
 - ``ashare_index_constituents`` — sz50 / hs300 / zz500 membership.
 - ``index_kline``   — benchmark index daily bars (sector-rotation baselines).
 - ``board_members`` — 板块/指数成分配置表（东财概念・东财行业・中证・国证），带权重与生效日。
+- ``arena_participants`` / ``arena_posts`` / ``arena_claims`` / ``arena_orders`` / ``arena_equity`` — KOL 短线擂台。规则见 ``docs/ARENA.md``。
 """
 
 from __future__ import annotations
@@ -161,6 +162,84 @@ CREATE TABLE IF NOT EXISTS board_members (
 );
 CREATE INDEX IF NOT EXISTS idx_board_members_code ON board_members(code);
 CREATE INDEX IF NOT EXISTS idx_board_members_type ON board_members(board_type, snapshot_date);
+
+CREATE TABLE IF NOT EXISTS arena_participants (
+    handle          TEXT    PRIMARY KEY,
+    display_name    TEXT    NOT NULL,
+    kind            TEXT    NOT NULL,          -- kol | grok
+    joined_on       TEXT    NOT NULL,          -- YYYY-MM-DD，这一天起才接单
+    cash            REAL    NOT NULL,
+    created_at      TEXT    NOT NULL,
+    status          TEXT    NOT NULL DEFAULT 'active',  -- active | eliminated
+    eliminated_on   TEXT,
+    eliminated_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS arena_posts (
+    post_id         TEXT    PRIMARY KEY,
+    handle          TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL,          -- 帖子时间，+08:00
+    captured_at     TEXT    NOT NULL,          -- arena-lock 读到文件的时间
+    text            TEXT    NOT NULL,
+    ocr_text        TEXT    NOT NULL DEFAULT '',
+    permalink       TEXT,
+    raw_json        TEXT,
+    stance          TEXT    NOT NULL,
+    late_capture    INTEGER NOT NULL DEFAULT 0,
+    deleted_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_arena_posts_handle ON arena_posts(handle, created_at);
+
+CREATE TABLE IF NOT EXISTS arena_claims (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id         TEXT    NOT NULL,
+    handle          TEXT    NOT NULL,
+    code            TEXT,
+    name            TEXT,
+    stance          TEXT    NOT NULL,
+    entry_date      TEXT,
+    evidence        TEXT,
+    reject_reason   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_arena_claims_post ON arena_claims(post_id);
+
+CREATE TABLE IF NOT EXISTS arena_orders (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_id        INTEGER,
+    handle          TEXT    NOT NULL,
+    code            TEXT    NOT NULL,
+    side            TEXT    NOT NULL,          -- buy | sell
+    entry_date      TEXT    NOT NULL,          -- 买单=开盘日；卖单=执行日
+    status          TEXT    NOT NULL,          -- locked | filled | skipped | closed
+    skip_reason     TEXT,
+    qty             INTEGER,
+    entry_open      REAL,
+    entry_fill      REAL,
+    entry_cost      REAL,
+    stop_price      REAL,
+    exit_date       TEXT,
+    exit_reason     TEXT,
+    exit_raw        REAL,
+    exit_fill       REAL,
+    exit_cost       REAL,
+    stamp           REAL,
+    pnl             REAL,
+    ret_pred        REAL,                      -- 下一交易日收盘的净收益，不止损
+    ret_acct        REAL,
+    excess          REAL,
+    pred_date       TEXT,
+    UNIQUE(handle, code, entry_date, side)
+);
+CREATE INDEX IF NOT EXISTS idx_arena_orders_status ON arena_orders(status, entry_date);
+
+CREATE TABLE IF NOT EXISTS arena_equity (
+    handle          TEXT    NOT NULL,
+    trade_date      TEXT    NOT NULL,
+    cash            REAL    NOT NULL,
+    market_value    REAL    NOT NULL,
+    equity          REAL    NOT NULL,
+    PRIMARY KEY (handle, trade_date)
+);
 """
 
 
@@ -217,6 +296,18 @@ def create_tables(db_path: str | Path) -> sqlite3.Connection:
             ("stock_type", "TEXT"),
             ("status", "TEXT"),
         ],
+    )
+    _ensure_columns(
+        conn,
+        "arena_participants",
+        [
+            ("status", "TEXT"),
+            ("eliminated_on", "TEXT"),
+            ("eliminated_reason", "TEXT"),
+        ],
+    )
+    conn.execute(
+        "UPDATE arena_participants SET status = 'active' WHERE status IS NULL"
     )
     conn.commit()
     return conn

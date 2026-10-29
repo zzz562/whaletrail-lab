@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """WhaleTrail Dashboard — read-only monitor.
 
-Pages: 黄金 paper / A股 paper / 相似选股 / 板块指数 / KOL 评测 / 跟庄复盘.
-Bare / renders 相似选股. Other pages: /?page=gold|ashare|boards|kol|genzhuang.
+Pages: 黄金 paper / A股 paper / 相似选股 / 板块指数 / 炒股擂台.
+Bare / renders 相似选股. Other pages: /?page=gold|ashare|boards|arena.
 No tab bar — the query string is the only switch.
 """
 from __future__ import annotations
@@ -63,17 +63,6 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 # full pool.
 SIMILAR_TEMPLATE_MAX_DAYS = 365
 SIMILAR_WINDOW_MIN_DAYS = 120
-KOL_ROSTER = [
-    "feigeshuogushi", "415254141a", "sd145157", "carla121100",
-    "fighterpromoter", "deelu179242", "oldk_gillis", "jimisenlin66474",
-    "todo_seguridad", "snake_w", "1044669280a", "lilratchetgurl",
-    "bbloveu7777", "eliasvancequant", "archdeng007", "barber_mae68154",
-    "aw3ff_", "agucdx",
-]
-KOL_ROSTER_SET = {a.lower() for a in KOL_ROSTER}
-KOL_EVAL_FILES = ("kol_eval.json", "kol_evaluation.json", "ashare_kol_eval.json", "kol_picks.json", "kol_review.json")
-GENZHUANG_LABEL_FILES = ("watchlist_labels.json", "genzhuang_labels.json", "genzhuang.json")
-VALID_LABELS = {"观察", "接近", "触发"}
 
 st.markdown("""<style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -203,151 +192,6 @@ def load_cached_close(symbol: str) -> Optional[pd.DataFrame]:
         df.index = df.index.tz_localize(None)
     return df
 
-@st.cache_data(ttl=60, show_spinner=False)
-def load_kol_eval_rows() -> list[dict]:
-    blobs: list[Any] = []
-    for name in KOL_EVAL_FILES:
-        data = _read_json(RESULTS_DIR / name)
-        if data is not None:
-            blobs.append(data)
-    for path in sorted(RESULTS_DIR.glob("kol_eval_*.json")):
-        data = _read_json(path)
-        if data is not None:
-            blobs.append(data)
-    rows: list[dict] = []
-    for blob in blobs:
-        rows.extend(_normalize_kol_blob(blob))
-    try:
-        repo = Repository(DB_PATH)
-        tables = {r[0] for r in repo.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        for table in ("kol_eval", "kol_picks", "ashare_kol_eval"):
-            if table not in tables:
-                continue
-            try:
-                db_rows = repo.conn.execute(f"SELECT * FROM {table}").fetchall()
-            except Exception:
-                continue
-            for r in db_rows:
-                rows.append(dict(r))
-        repo.close()
-    except Exception:
-        pass
-    return rows
-
-def _normalize_kol_blob(blob: Any) -> list[dict]:
-    if blob is None:
-        return []
-    if isinstance(blob, list):
-        return [x for x in blob if isinstance(x, dict)]
-    if not isinstance(blob, dict):
-        return []
-    for key in ("picks", "evaluations", "rows", "entries", "items"):
-        val = blob.get(key)
-        if isinstance(val, list):
-            return [x for x in val if isinstance(x, dict)]
-    accounts = blob.get("accounts")
-    if isinstance(accounts, dict):
-        out = []
-        for acc, items in accounts.items():
-            if isinstance(items, list):
-                for it in items:
-                    if isinstance(it, dict):
-                        row = dict(it); row.setdefault("account", acc); out.append(row)
-            elif isinstance(items, dict):
-                row = dict(items); row.setdefault("account", acc); out.append(row)
-        return out
-    if any(k in blob for k in ("account", "symbol", "ticker", "code")):
-        return [blob]
-    return []
-
-@st.cache_data(ttl=60, show_spinner=False)
-def load_genzhuang_labels() -> dict[str, str]:
-    blobs: list[Any] = []
-    for name in GENZHUANG_LABEL_FILES:
-        data = _read_json(RESULTS_DIR / name)
-        if data is not None:
-            blobs.append(data)
-    out: dict[str, str] = {}
-    for blob in blobs:
-        out.update(_normalize_labels(blob))
-    return out
-
-def _normalize_labels(blob: Any) -> dict[str, str]:
-    out: dict[str, str] = {}
-    if isinstance(blob, dict):
-        items = blob.get("items") or blob.get("labels") or blob.get("watchlist")
-        if isinstance(items, list):
-            blob = items
-        elif isinstance(items, dict):
-            blob = items
-        if isinstance(blob, dict) and not isinstance(items, list):
-            for k, v in blob.items():
-                if k in ("items", "labels", "watchlist"):
-                    continue
-                label = v.get("label") if isinstance(v, dict) else v
-                if str(label) in VALID_LABELS:
-                    out[str(k)] = str(label)
-            return out
-    if isinstance(blob, list):
-        for it in blob:
-            if not isinstance(it, dict):
-                continue
-            label = it.get("label") or it.get("状态") or it.get("tag")
-            if str(label) not in VALID_LABELS:
-                continue
-            for key in ("tv_symbol", "yahoo_symbol", "code", "id", "name", "symbol"):
-                if it.get(key):
-                    out[str(it[key])] = str(label)
-    return out
-
-@st.cache_data(ttl=60, show_spinner=False)
-def load_completed_watchlist_bars() -> list[dict]:
-    try:
-        items = [i for i in load_watchlist(WATCHLIST_PATH) if i.market == "china"]
-    except Exception:
-        return []
-    if not items:
-        return []
-    today = _cn_today().isoformat()
-    labels = load_genzhuang_labels()
-    rows: list[dict] = []
-    try:
-        repo = Repository(DB_PATH)
-        has_kline = repo.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_kline'").fetchone()
-        for item in items:
-            rec = {"名称": item.name, "代码": item.tv_symbol, "标签": _lookup_label(labels, item),
-                   "交易日": None, "开": None, "高": None, "低": None, "收": None, "量": None}
-            if has_kline:
-                try:
-                    code = to_baostock_code(item.tv_symbol)
-                except ValueError:
-                    code = None
-                if code:
-                    bar = repo.conn.execute(
-                        "SELECT trade_date, open, high, low, close, volume FROM daily_kline WHERE code = ? AND trade_date < ? ORDER BY trade_date DESC LIMIT 1",
-                        (code, today),
-                    ).fetchone()
-                    if bar:
-                        rec["交易日"] = bar["trade_date"]; rec["开"] = bar["open"]; rec["高"] = bar["high"]
-                        rec["低"] = bar["low"]; rec["收"] = bar["close"]; rec["量"] = bar["volume"]
-            rows.append(rec)
-        repo.close()
-    except Exception:
-        for item in items:
-            rows.append({"名称": item.name, "代码": item.tv_symbol, "标签": _lookup_label(labels, item),
-                         "交易日": None, "开": None, "高": None, "低": None, "收": None, "量": None})
-    return rows
-
-def _lookup_label(labels: dict[str, str], item) -> Optional[str]:
-    keys = [item.tv_symbol, item.id, item.name, item.yahoo_symbol or ""]
-    try:
-        keys.append(to_baostock_code(item.tv_symbol))
-    except ValueError:
-        pass
-    for k in keys:
-        if k and k in labels:
-            return labels[k]
-    return None
 
 def _staleness(ts_str: str) -> str:
     if not ts_str:
@@ -581,16 +425,6 @@ def _side_style(v) -> str:
     if s == "SELL":
         return "color:#f87171;font-weight:700"
     return ""
-
-def _label_style(v) -> str:
-    s = str(v)
-    if s == "触发":
-        return "color:#e6b450;font-weight:700"
-    if s == "接近":
-        return "color:#fbbf24;font-weight:600"
-    if s == "观察":
-        return "color:#38bdf8;font-weight:600"
-    return "color:#8b98a9"
 
 def _fmt_pct(v: Optional[float]) -> str:
     return "—" if v is None else f"{v:+.2f}%"
@@ -2027,49 +1861,418 @@ def page_similar() -> None:
             st.caption(f"对照 {_label(pick)} 无换手，没有末日筹码。")
     st.caption("红柱是收盘价及以下的筹码（获利），金色线是收盘价。")
 
-def _kol_handle(acc: Any) -> str:
-    return str(acc or "").lstrip("@").strip()
+def _arena_pct(v) -> str:
+    return "—" if v is None else f"{v * 100:+.2f}%"
 
-def page_kol() -> None:
-    _page_header("KOL 评测", "A股荐股推文 vs 事后对照 · 冻结 18 账号 · 只读本地结果")
-    _note("A 股荐股推文与事后对照。不调 live X API。无存储对照则空表，不编数字。")
-    _sec("冻结名册 · 18")
-    st.caption(" · ".join(f"@{a}" for a in KOL_ROSTER))
-    _sec("荐股 / 事后对照")
-    cols = ["账号", "日期", "标的", "荐股", "对照日", "事后结果"]
-    rows = []
-    for it in load_kol_eval_rows():
-        acc = it.get("account") or it.get("账号") or it.get("handle") or it.get("user")
-        if _kol_handle(acc).lower() not in KOL_ROSTER_SET:
-            continue
-        rows.append({"账号": f"@{_kol_handle(acc)}", "日期": it.get("date") or it.get("日期") or it.get("tweet_date") or it.get("created_at"),
-                     "标的": it.get("symbol") or it.get("ticker") or it.get("code") or it.get("标的"),
-                     "荐股": it.get("pick") or it.get("荐股") or it.get("summary") or it.get("text"),
-                     "对照日": it.get("eval_date") or it.get("对照日") or it.get("as_of"),
-                     "事后结果": it.get("outcome") or it.get("事后结果") or it.get("result") or it.get("return")})
-    if not rows:
-        _show(pd.DataFrame(columns=cols)); st.info("没有已存储的评测数据。空表如上，不编对照。"); return
-    _show(_style_base(pd.DataFrame(rows, columns=cols).style.hide(axis="index")).format(na_rep="—"), width="stretch")
-    st.caption(f"{len(rows)} 行来自 results/ 或 SQLite 已存评测，未请求 X。")
+def _arena_rank_color(rank: int, n: int) -> str:
+    """One blue. Rank 0 is the clearest; the tail sinks into the background."""
+    t = 0.0 if n <= 1 else rank / (n - 1)
+    def mix(a: int, b: int) -> int:
+        return round(a + (b - a) * t)
+    r, g, b = mix(0xB7, 0x3A), mix(0xDF, 0x55), mix(0xF0, 0x66)
+    return f"#{r:02x}{g:02x}{b:02x}"
 
-def page_genzhuang() -> None:
-    _page_header("跟庄复盘", "watchlist 标签 观察 / 接近 / 触发 · 已收盘日 K · 不是当日阴")
-    _note("跟庄只表示现有 watchlist 上的三个标签。日线已收盘 K（baostock），不用 tvscreener 快照冒充完成 bar，不编 OHLC，不与 KOL 混页。黄金矿股留在本页。")
-    rows = load_completed_watchlist_bars()
-    if not rows:
-        st.info("没有 A 股 watchlist 或无法读取。不编名单。"); return
-    df = pd.DataFrame(rows)
-    has_bar = df["交易日"].notna().any() if "交易日" in df.columns else False
-    has_label = df["标签"].notna().any() if "标签" in df.columns else False
-    if not has_bar and not has_label:
-        st.info("无已收盘日 K、无已存标签。空表如下，不编 OHLC，不新建 yin-right.json。")
-    view_cols = [c for c in ("名称", "代码", "标签", "交易日", "开", "高", "低", "收", "量") if c in df.columns]
-    fmt = {k: v for k, v in {"开": "{:,.2f}", "高": "{:,.2f}", "低": "{:,.2f}", "收": "{:,.2f}", "量": "{:,.0f}"}.items() if k in df.columns}
-    styled = _style_base(df[view_cols].style.hide(axis="index")).format(fmt, na_rep="—")
-    if "标签" in df.columns:
-        styled = styled.map(_label_style, subset=["标签"])
-    _show(styled, width="stretch")
-    st.caption("标签仅 观察 / 接近 / 触发；缺失为 —。当日 bar 已排除。")
+def _arena_rank_opacity(rank: int, n: int) -> float:
+    t = 0.0 if n <= 1 else rank / (n - 1)
+    return round(0.95 + (0.28 - 0.95) * t, 3)
+
+_ARENA_COLORS = [
+    "#e6b450", "#7dd3fc", "#86efac", "#f9a8d4", "#c4b5fd",
+    "#fdba74", "#67e8f9", "#fca5a5", "#fde68a", "#cbd5e1",
+]
+
+def _arena_ret(equity) -> float | None:
+    if equity is None:
+        return None
+    return float(equity) / 100000.0 - 1.0
+
+def _arena_when(raw: str) -> str:
+    if not raw:
+        return "—"
+    try:
+        dt = pd.to_datetime(raw)
+        if getattr(dt, "tzinfo", None) is not None:
+            dt = dt.tz_convert("Asia/Shanghai")
+        return dt.strftime("%m-%d %H:%M")
+    except Exception:
+        return str(raw)[:16]
+
+def _arena_blurb(text: str, n: int = 72) -> str:
+    flat = " ".join((text or "").split())
+    return flat[:n] + ("…" if len(flat) > n else "")
+
+def _arena_esc(text: str) -> str:
+    return (
+        (text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+def _arena_verdict(row: dict) -> str:
+    if row.get("order_status") == "filled":
+        return "买入"
+    if row.get("skip_reason") == "limit_up":
+        return "买不进"
+    if row.get("skip_reason"):
+        return str(row["skip_reason"])
+    stance = row.get("claim_stance") or row.get("post_stance") or ""
+    if stance == "recap":
+        return "复盘"
+    if stance == "list":
+        return "名单"
+    if row.get("reject_reason"):
+        return str(row["reject_reason"])
+    if stance == "forward":
+        return "向前"
+    return stance or "归档"
+
+def _arena_top_curves(conn, played: list[dict]) -> pd.DataFrame:
+    from whaletrail.arena.report import equity_series
+    top = played[:10]
+    series = {row["handle"]: {p["date"]: p["equity"] for p in equity_series(conn, row["handle"])} for row in top}
+    dates = sorted({d for points in series.values() for d in points})
+    if not dates:
+        return pd.DataFrame()
+    frame = []
+    labels = {row["handle"]: row["name"] for row in top}
+    for row in top:
+        last = 100000.0
+        points = series[row["handle"]]
+        label = f"{labels[row['handle']]}  {_arena_pct(_arena_ret(row['equity']))}"
+        for day in dates:
+            if day in points:
+                last = float(points[day])
+            frame.append({"日期": day, "收益": (last / 100000.0 - 1.0) * 100.0, "选手": label, "净值": last})
+    return pd.DataFrame(frame)
+
+def page_arena() -> None:
+    try:
+        from whaletrail.arena.ledger import connect
+        from whaletrail.arena.report import contest_span, equity_series, leaderboard, stock_board, tape
+        conn = connect(DB_PATH)
+        board = leaderboard(conn)
+        span = contest_span(conn)
+        stocks = stock_board(conn)
+    except Exception as exc:
+        st.info(f"擂台账打不开：{exc}")
+        return
+    if not board:
+        conn.close()
+        st.info("名册还没入账。")
+        return
+    if st.session_state.pop("_arena_reset", False):
+        for key in ("arena_focus", "arena_code", "arena_people", "arena_stocks"):
+            st.session_state.pop(key, None)
+
+    names = {r["handle"]: r["name"] for r in board}
+    by_handle = {r["handle"]: r for r in board}
+    grok = by_handle.get("grok")
+    played = [r for r in board if r.get("status") != "eliminated" and r["n"] > 0 and r["equity"] is not None and r["handle"] != "grok"]
+    played.sort(key=lambda r: r["equity"], reverse=True)
+    field = ([grok] if grok else []) + played
+    focus = st.session_state.get("arena_focus")
+    focus_code = st.session_state.get("arena_code")
+    if focus not in names:
+        focus = None
+
+    grok_ret = _arena_pct(_arena_ret(grok["equity"])) if grok and grok.get("equity") is not None else "—"
+    st.markdown(
+        f"<div style='margin:4px 0 14px'>"
+        f"<div style='color:#8b98a9;font-size:12px;letter-spacing:.14em;font-weight:700'>纸面 10 万</div>"
+        f"<div style='font-size:32px;font-weight:800;letter-spacing:-.03em;line-height:1.05;margin:4px 0'>KOL炒股大赛</div>"
+        f"<div style='color:#8b98a9;font-size:14px'>在赛 {sum(1 for r in board if r.get('status')!='eliminated')} / 100"
+        f" · 有成交 {len(played)} · 结算 {span.get('asof') or '—'}"
+        f" · Grok {grok_ret}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    race = played[:8]
+    if grok and grok not in race:
+        race = [grok] + race
+    elif grok:
+        race = [grok] + [r for r in race if r["handle"] != "grok"]
+    dates = []
+    series = {}
+    for row in race:
+        pts = {p["date"]: p["equity"] for p in equity_series(conn, row["handle"])}
+        series[row["handle"]] = pts
+        dates.extend(pts)
+    dates = sorted(set(dates))
+    ranked = [row["name"] for row in race if row["handle"] != "grok"]
+    rank_of = {name: i for i, name in enumerate(ranked)}
+    frame = []
+    if dates:
+        for row in race:
+            tag = "Grok" if row["handle"] == "grok" else row["name"]
+            last = 100000.0
+            points = series[row["handle"]]
+            layer = "Grok" if row["handle"] == "grok" else "其他人"
+            if layer == "Grok":
+                opacity, width = 1.0, 1.75
+            else:
+                opacity = _arena_rank_opacity(rank_of[tag], len(ranked))
+                width = 1.15
+            for day in dates:
+                if day in points:
+                    last = float(points[day])
+                frame.append({
+                    "日期": day,
+                    "收益": (last / 100000.0 - 1) * 100,
+                    "选手": tag,
+                    "层": layer,
+                    "净值": last,
+                    "透": opacity,
+                    "粗": width,
+                })
+        idx = conn.execute(
+            "SELECT trade_date, open, close FROM index_kline WHERE code='sh.000300' AND trade_date>=? AND trade_date<=? ORDER BY trade_date",
+            (dates[0], dates[-1]),
+        ).fetchall()
+        if idx and idx[0]["open"]:
+            base = float(idx[0]["open"])
+            for bar in idx:
+                if bar["close"]:
+                    frame.append({
+                        "日期": bar["trade_date"],
+                        "收益": (float(bar["close"]) / base - 1) * 100,
+                        "选手": "沪深300",
+                        "层": "沪深300",
+                        "净值": float(bar["close"]),
+                        "透": 0.85,
+                        "粗": 1.15,
+                    })
+    conn_for_later = conn
+    if frame:
+        df = pd.DataFrame(frame)
+        df["日期"] = pd.to_datetime(df["日期"])
+        df["_draw"] = df["层"].map({"其他人": 0, "沪深300": 1, "Grok": 2}).fillna(0)
+        df["_rank"] = df["选手"].map(lambda n: rank_of.get(n, -1))
+        # Weaker names paint first, so the leader and Grok stay on top.
+        df = df.sort_values(["_draw", "_rank", "日期"], ascending=[True, False, True])
+        present = set(df["选手"])
+        domain = [n for n in (["Grok", "沪深300"] + ranked) if n in present]
+        colors = []
+        for name in domain:
+            if name == "Grok":
+                colors.append("#e6b450")
+            elif name == "沪深300":
+                colors.append("#8b98a9")
+            else:
+                colors.append(_arena_rank_color(rank_of[name], len(ranked)))
+        # Same field as color so the legend swatch keeps the dash.
+        dashes = [[6, 4] if name == "沪深300" else [1, 0] for name in domain]
+        span = [df["日期"].min(), df["日期"].max()]
+        x = alt.X(
+            "日期:T",
+            title=None,
+            scale=alt.Scale(domain=span),
+            axis=alt.Axis(format="%m-%d", tickCount=int(df["日期"].nunique()), labelColor="#8b98a9", grid=False, tickColor="#1e2a3a"),
+        )
+        y = alt.Y("收益:Q", title=None, axis=alt.Axis(format="+.1f", labelColor="#8b98a9", gridColor="#182231"))
+        # Legend stream is click and pointerover. Line hover uses the voronoi on this same unit.
+        hover = alt.selection_point(
+            name="hl", fields=["选手"], nearest=True, toggle=False, empty=False,
+            on="pointerover", clear="pointerout",
+            bind={"legend": "click, pointerover"},
+        )
+        tip = [
+            "选手",
+            alt.Tooltip("日期:T", title="日期", format="%m-%d"),
+            alt.Tooltip("收益:Q", title="收益 %", format="+.2f"),
+            alt.Tooltip("净值:Q", title="净值", format=",.0f"),
+        ]
+        # symbolOpacity keeps the swatch at full strength; the selection dims the other entries.
+        legend = alt.Legend(
+            title=None,
+            orient="bottom",
+            direction="horizontal",
+            columns=0,
+            columnPadding=18,
+            labelColor="#e6edf3",
+            labelFontSize=12,
+            labelLimit=160,
+            symbolType="stroke",
+            symbolSize=320,
+            symbolStrokeWidth=1.6,
+            symbolOpacity=1,
+        )
+        color = alt.Color("选手:N", scale=alt.Scale(domain=domain, range=colors), legend=legend)
+        dash = alt.StrokeDash(
+            "选手:N",
+            scale=alt.Scale(domain=domain, range=dashes),
+            legend=alt.Legend(
+                title=None, symbolType="stroke", symbolSize=320, symbolStrokeWidth=1.6, symbolOpacity=1,
+            ),
+        )
+        on = "length(data('hl_store'))"
+        hit = "vlSelectionTest('hl_store', datum)"
+        lines = (
+            alt.Chart(df)
+            .mark_line()
+            .encode(
+                x=x,
+                y=y,
+                color=color,
+                strokeDash=dash,
+                opacity=alt.Opacity(value={"expr": f"{on} ? ({hit} ? 1 : 0.16) : datum['透']"}),
+                strokeWidth=alt.StrokeWidth(value={"expr": f"{on} && {hit} ? 2.4 : datum['粗']"}),
+                tooltip=tip,
+            )
+            .add_params(hover)
+        )
+        zero = alt.Chart(pd.DataFrame({"收益": [0]})).mark_rule(color="#334155", strokeDash=[3, 3]).encode(y="收益:Q")
+        st.altair_chart(_alt_dark((zero + lines).properties(height=360)), width="stretch")
+        st.caption(f"{span[0]:%m-%d} 到 {span[1]:%m-%d}。")
+    else:
+        st.caption("还没有足够的净值可以画走势。")
+
+    people_col, stock_col = st.columns(2, gap="large")
+    with people_col:
+        st.markdown("**参赛选手**")
+        st.caption("X 荐股账户，按收益排。Grok 固定在第一行。")
+        people_rows = []
+        people_index = []
+        if grok:
+            people_index.append(grok)
+            people_rows.append({
+                "选手": "Grok",
+                "收益": grok_ret,
+                "胜率": _arena_pct(grok["win_rate"]),
+                "笔数": grok["n"],
+                "主页": "",
+            })
+        for row in played:
+            people_index.append(row)
+            people_rows.append({
+                "选手": row["name"],
+                "收益": _arena_pct(_arena_ret(row["equity"])),
+                "胜率": _arena_pct(row["win_rate"]),
+                "笔数": row["n"],
+                "主页": f"https://x.com/{row['handle']}",
+            })
+        if people_rows:
+            event = st.dataframe(
+                pd.DataFrame(people_rows),
+                column_config={"主页": st.column_config.LinkColumn("主页", display_text="打开")},
+                hide_index=True,
+                width="stretch",
+                on_select="rerun",
+                selection_mode="single-row",
+                key="arena_people",
+            )
+            picked = list(getattr(getattr(event, "selection", None), "rows", []) or [])
+            if picked:
+                focus = people_index[picked[0]]["handle"]
+                st.session_state["arena_focus"] = focus
+                st.session_state.pop("arena_code", None)
+                focus_code = None
+    with stock_col:
+        st.markdown("**高胜率票**")
+        st.caption("已平仓的推票。至少结算 2 笔的按胜率排在前面，只有 1 笔的列在后面。")
+        hot = [s for s in stocks if int(s["n"] or 0) >= 2]
+        rest = [s for s in stocks if int(s["n"] or 0) < 2]
+        hot.sort(key=lambda s: (-(s["wins"] or 0) / s["n"], -(s["avg_ret"] or -1)))
+        show_stocks = (hot + rest)[:12]
+        stock_rows = []
+        for s in show_stocks:
+            n = int(s["n"] or 0)
+            wins = int(s["wins"] or 0)
+            stock_rows.append({
+                "股票": s["name"],
+                "代码": s["code"],
+                "被推": n,
+                "胜率": _arena_pct(wins / n) if n else "—",
+                "平均": _arena_pct(s["avg_ret"]),
+                "谁": (s.get("callers") or "—")[:28],
+            })
+        if stock_rows:
+            sevent = st.dataframe(
+                pd.DataFrame(stock_rows),
+                hide_index=True,
+                width="stretch",
+                on_select="rerun",
+                selection_mode="single-row",
+                key="arena_stocks",
+            )
+            spicked = list(getattr(getattr(sevent, "selection", None), "rows", []) or [])
+            if spicked:
+                focus_code = show_stocks[spicked[0]]["code"]
+                st.session_state["arena_code"] = focus_code
+                st.session_state.pop("arena_focus", None)
+                focus = None
+        else:
+            st.caption("还没有结算完的票。")
+
+    bits = []
+    if focus:
+        bits.append(f"**{names.get(focus, focus)}**")
+        if focus != "grok":
+            bits.append(f"[主页](https://x.com/{focus})")
+    if focus_code:
+        label = next((s["name"] for s in stocks if s["code"] == focus_code), focus_code)
+        bits.append(f"票 **{label}**")
+    bar, clear = st.columns([8, 1])
+    if bits:
+        bar.markdown("正在看 " + " · ".join(bits))
+    else:
+        bar.caption("下面是推票记录，新的在上。点上面的人或票可以收窄。")
+    if (focus or focus_code) and clear.button("全部", key="arena_clear"):
+        st.session_state["_arena_reset"] = True
+        st.rerun()
+
+    st.markdown("**推票记录**")
+    feed = tape(conn_for_later, focus, focus_code, 30)
+    conn_for_later.close()
+    if not feed:
+        st.caption("这条过滤下没有推票。")
+        return
+    body = []
+    for r in feed:
+        full = " ".join((r.get("text") or "").split())
+        who_name = "Grok" if r["handle"] == "grok" else names.get(r["handle"], r["handle"])
+        home = "" if r["handle"] == "grok" else f"<a href='https://x.com/{_arena_esc(r['handle'])}' target='_blank'>主页</a>"
+        post = f"<a href='{_arena_esc(r.get('permalink') or '')}' target='_blank'>帖子</a>" if r.get("permalink") else "—"
+        body.append(
+            "<tr>"
+            f"<td>{_arena_esc(_arena_when(r.get('created_at')))}</td>"
+            f"<td>{_arena_esc(who_name)}</td>"
+            f"<td>{home}</td>"
+            f"<td>{_arena_esc(r.get('name') or r.get('code') or '—')}</td>"
+            f"<td>{_arena_esc(_arena_verdict(r))}</td>"
+            f"<td>{_arena_esc(_arena_pct(r.get('ret_acct')))}</td>"
+            f"<td>{_arena_esc(r.get('evidence') or '—')}</td>"
+            f"<td class='orig' title='{_arena_esc(full)}'><span class='short'>{_arena_esc(_arena_blurb(full, 42))}</span>"
+            f"<span class='full'>{_arena_esc(full) or '—'}</span></td>"
+            f"<td>{post}</td>"
+            "</tr>"
+        )
+    st.markdown(
+        """
+        <style>
+        .arena-tape { width:100%; border-collapse:collapse; font-size:13px; }
+        .arena-tape th { color:#8b98a9; font-weight:600; text-align:left; padding:8px 8px; border-bottom:1px solid #1e2a3a; }
+        .arena-tape td { padding:8px 8px; border-bottom:1px solid #182231; vertical-align:top; color:#e6edf3; }
+        .arena-tape a { color:#7dd3fc; text-decoration:none; }
+        .arena-tape .orig { position:relative; max-width:240px; }
+        .arena-tape .short { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:help; }
+        .arena-tape .full {
+          display:none; position:absolute; z-index:40; left:0; top:1.6em; width:380px;
+          white-space:pre-wrap; background:#0d1320; color:#e6edf3; border:1px solid #e6b450;
+          border-radius:8px; padding:10px 12px; box-shadow:0 10px 28px rgba(0,0,0,.5);
+        }
+        .arena-tape .orig:hover .full { display:block; }
+        </style>
+        <table class="arena-tape"><thead><tr>
+        <th>时间</th><th>选手</th><th>主页</th><th>标的</th><th>判定</th><th>盈亏</th><th>摘句</th><th>原文</th><th>帖子</th>
+        </tr></thead><tbody>
+        """
+        + "".join(body)
+        + "</tbody></table>",
+        unsafe_allow_html=True,
+    )
+
 
 @_frag(run_every=60)
 def _health_strip() -> None:
@@ -2099,15 +2302,14 @@ with tb1:
 with tb2:
     if st.button("刷新"):
         st.cache_data.clear(); st.rerun()
-# Deep links (same host): /?page=gold|ashare|similar|boards|kol|genzhuang
+# Deep links (same host): /?page=gold|ashare|similar|boards|arena
 # Bare / is 相似选股. No tab bar.
 PAGE_DEFS: list[tuple[str, str, Any]] = [
     ("gold", "黄金 paper", page_gold_paper),
     ("ashare", "A股 paper", page_ashare_paper),
     ("similar", "相似选股", page_similar),
     ("boards", "板块指数", page_boards),
-    ("kol", "KOL 评测", page_kol),
-    ("genzhuang", "跟庄复盘", page_genzhuang),
+    ("arena", "炒股擂台", page_arena),
 ]
 PAGE_FN = {k: fn for k, _, fn in PAGE_DEFS}
 

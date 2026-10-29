@@ -87,6 +87,10 @@ yfinance ──► ParquetCache ──► Backtester ──► results/*.json
 
 32. A股取数层多源化（2026-10-15）：日线从「只走 baostock」改为可配置的多源取数层。`config/ashare_sources.yaml` 是唯一配置入口；`scripts/fetch-ashare.py` 按阶段跑（fast/extras/fallback/verify），每阶段状态写 `results/fetch-status.json`；`scripts/ashare-fetch-status.py --json` 给 Grok bot 当运维探针。角色分工不做无脑回退、字段级权威：**fast**（cron 15:10）东财 `push2` 全市场快照（收盘后快照即当日 OHLCV），best-effort——实测 `push2`/`push2his` 按源 IP 限流（家宽与 VPS 都会被限，`clist` 每页上限 100 行），写多少算多少、失败不告警；**extras**（cron 17:45）baostock 权威补 `tradestatus/is_st/pe_ttm/pb_mrq` + 停牌行 + 8 条 `index_kline` + 静态快照，并给静态查询补上 3×`--query-timeout` 的 signal 超时（防半关闭连接挂死）；**fallback**（cron 20:00）同 extras 兜底；**verify**（cron 15:35）跑 `check-ashare-data.py` 体检。Tushare 免费档留位（`enabled: false`，需 token；整日批量最稳但免费档无换手）；tvscreener 仍只做实时快照。东财与 baostock 均为不复权，抽验 OHLC 一致（150 只 × 2 日，OHLC 零差异；turn/pct_chg 四舍五入到 2 位小数可忽略）。此条放宽决策 20/26 的「日线只走 baostock」，但 baostock 仍是扩展字段与指数的唯一权威，配置表仍可接东财不变。代码：`config/ashare_sources.yaml`、`whaletrail/data/sources_config.py`、`whaletrail/data/eastmoney_source.py`、`scripts/fetch-ashare.py`、`scripts/ashare-fetch-status.py`、`scripts/fetch-baostock-universe.py`。
 
+33. 炒股擂台替换 KOL 评测和跟庄复盘（2026-10-19）：这两页删掉。新页 `?page=arena` 是一张只读的短线纸面成绩，不进黄金账，不进 A 股 paper，不发 Telegram。名册在 `config/arena_roster.yaml`（21 个 X 账号 + Grok），入赛日 2026-10-20，每人 10 万。规则写死在 `whaletrail/arena/`：09:25 前锁定的向前喊单按当日开盘买，09:25 之后的向前喊单顺延到下一开盘，一帖超过 3 只整帖作废，复盘和长名单不成交，T+1，预测分用下一交易日收盘，账户在可卖的第一天按 −6% 止损或收盘卖。原文存在 `arena_posts`。Grok 是同一套账上的参赛者，喊单文件 `grok:YYYY-MM-DD`，不是规则的作者。结算只用已完成的 `daily_kline` / `index_kline`。代码：`whaletrail/arena/`、`scripts/arena-lock.py`、`scripts/arena-settle.py`、`scripts/arena-status.py`、`scripts/arena-mark-deleted.py`、`scripts/dashboard.py`。操作说明：`docs/ARENA.md`。
+
+34. 擂台新人入赛、满员与出局（2026-10-19）：名册外的账号交来 1 到 3 只对得上代码的向前喊单就入赛，领 10 万。同时在赛最多 100 人。空仓且净值低于 2 万出局（亏完）；空仓且连续 10 个交易日没新帖出局（停更）。出局不重置本金、不自动回来。09:25 之后的帖，含午休和盘中，只进下一交易日开盘，日 K 没有午盘价。运维由 Grok bot 定时跑，不走 OpenClaw。代码：`whaletrail/arena/ledger.py`、`whaletrail/arena/rules.py`。说明：`docs/ARENA.md`。
+
 ## 决策记录规范
 
 - 每个重大决策写一条，带日期；一句话说清"定了什么、为什么、影响哪里"。

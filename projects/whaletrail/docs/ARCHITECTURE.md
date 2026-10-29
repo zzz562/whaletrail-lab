@@ -94,7 +94,8 @@ A 股低频率 paper 入口：`scripts/ashare-paper.py`（SMA 20/50 昨收信号
 
 ## 存储
 
-- SQLite `results/whaletrail.db`（WAL）：`runs`、`trades`、`portfolio_snapshots`、`quote_snapshots`、`daily_kline`、`index_kline`、`ashare_universe`、`ashare_industry`、`ashare_index_constituents`。
+- SQLite `results/whaletrail.db`（WAL）：`runs`、`trades`、`portfolio_snapshots`、`quote_snapshots`、`daily_kline`、`index_kline`、`ashare_universe`、`ashare_industry`、`ashare_index_constituents`，以及擂台的 `arena_participants` / `arena_posts` / `arena_claims` / `arena_orders` / `arena_equity`。
+- 炒股擂台是只读成绩，不是第三本实盘账。锁单不读价格，结算只吃已经入库的日 K。规则和 Grok 参赛方式见 `docs/ARENA.md`。
 - `runs.symbols`、`metrics_json`、`positions_json`、`raw_json` 为 JSON 文本。
 - 回测结果 JSON：`trades[]`（含 FIFO 计算的 `pnl`）、`equity_curve[]`、`final_equity`、`total_commission`、`total_return`、`metrics`、`strategy`、`symbol`、`role`、`market`、`start`、`end`。
 

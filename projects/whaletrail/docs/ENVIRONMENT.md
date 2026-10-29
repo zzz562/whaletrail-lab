@@ -84,7 +84,11 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | `scripts/ashare-similar.py` | 旧的相似选股 CLI（K 召回 + 量/筹重排，`retrieve_rank`；页面已不走这条） | Mac mini（手动） | venv、SQLite `daily_kline` |
 | `scripts/seed-ashare-history.py` | A股日线历史种子 | Mac mini（手动） | venv、tvdatafeed、代理 |
 | `scripts/watchlist-report.py` | watchlist Markdown 报表 | 任意（本地读 SQLite） | venv |
-| `scripts/dashboard.py` | Streamlit 看板。生产 launchd `ai.whaletrail-dashboard`（worktree，`:8766`）；预发 `ai.whaletrail-dashboard-stage`（lab，`:8768`） | Mac mini | venv、`WT_DATA_ROOT`（生产指向 lab 的 `results/`） |
+| `scripts/dashboard.py` | Streamlit 看板。生产 launchd `ai.whaletrail-dashboard`（worktree，`:8766`）；预发 `ai.whaletrail-dashboard-stage`（lab，`:8768`）。擂台页 `?page=arena` | Mac mini | venv、`WT_DATA_ROOT`（生产指向 lab 的 `results/`） |
+| `scripts/arena-lock.py` | 把 inbox JSON 锁成擂台订单。09:25 前锁定才算当日开盘；名册外的合格喊单会入赛，在赛上限 100 | Mac mini（Grok bot，交易日 09:10 与 15:40） | venv、SQLite、名册 YAML、深交所日历 |
+| `scripts/arena-settle.py` | 用已入库日 K 给擂台成交、止损和记账 | Mac mini（Grok bot，日 K 健康之后） | venv、SQLite `daily_kline` + `index_kline` |
+| `scripts/arena-status.py` | 打印擂台名次。`--json` 给 bot | Mac mini / 本地 | venv、SQLite |
+| `scripts/arena-mark-deleted.py` | 给已归档帖子打上删除时间，不动成交 | Mac mini（Grok bot） | venv、SQLite |
 
 ## venv（MacBook 本地需要时）
 
