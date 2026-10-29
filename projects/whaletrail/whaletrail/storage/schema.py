@@ -240,6 +240,22 @@ CREATE TABLE IF NOT EXISTS arena_equity (
     equity          REAL    NOT NULL,
     PRIMARY KEY (handle, trade_date)
 );
+
+-- 全市场 10 分钟 K（盘中快照聚合 + 收盘 kline 校准；留 5 个交易日）。
+CREATE TABLE IF NOT EXISTS minute_kline (
+    code            TEXT    NOT NULL,  -- sh.600690
+    ts              TEXT    NOT NULL,  -- bar 结束时间 YYYY-MM-DD HH:MM:SS（与新浪 kline 对齐）
+    trade_date      TEXT    NOT NULL,  -- YYYY-MM-DD，供 prune
+    open            REAL,
+    high            REAL,
+    low             REAL,
+    close           REAL,
+    volume          REAL,              -- 股
+    amount          REAL,              -- 元
+    source          TEXT    NOT NULL DEFAULT 'snapshot',  -- snapshot | kline
+    PRIMARY KEY (code, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_minute_kline_date ON minute_kline(trade_date);
 """
 
 

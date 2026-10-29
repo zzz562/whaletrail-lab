@@ -442,6 +442,40 @@ class Repository:
         ).fetchall()
         return {r["code"]: r["last"] for r in rows if r["last"]}
 
+    def save_minute_bars(self, rows: list[dict]) -> int:
+        """Bulk-upsert 10-minute bars into ``minute_kline``."""
+        batch = [
+            (
+                r.get("code", ""),
+                r.get("ts", ""),
+                r.get("trade_date", ""),
+                r.get("open"),
+                r.get("high"),
+                r.get("low"),
+                r.get("close"),
+                r.get("volume"),
+                r.get("amount"),
+                r.get("source", "snapshot"),
+            )
+            for r in rows
+        ]
+        cur = self.conn.executemany(
+            """INSERT OR REPLACE INTO minute_kline
+               (code, ts, trade_date, open, high, low, close, volume, amount, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            batch,
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def prune_minute_bars(self, before_trade_date: str) -> int:
+        """Delete minute bars older than *before_trade_date* (exclusive)."""
+        cur = self.conn.execute(
+            "DELETE FROM minute_kline WHERE trade_date < ?", (before_trade_date,)
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def daily_last_date(self, code: str) -> Optional[str]:
         """Return the newest ``trade_date`` persisted for *code*, or *None*."""
         row = self.conn.execute(

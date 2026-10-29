@@ -91,6 +91,8 @@ yfinance ──► ParquetCache ──► Backtester ──► results/*.json
 
 34. 擂台新人入赛、满员与出局（2026-10-19）：名册外的账号交来 1 到 3 只对得上代码的向前喊单就入赛，领 10 万。同时在赛最多 100 人。空仓且净值低于 2 万出局（亏完）；空仓且连续 10 个交易日没新帖出局（停更）。出局不重置本金、不自动回来。09:25 之后的帖，含午休和盘中，只进下一交易日开盘，日 K 没有午盘价。运维由 Grok bot 定时跑，不走 OpenClaw。代码：`whaletrail/arena/ledger.py`、`whaletrail/arena/rules.py`。说明：`docs/ARENA.md`。
 
+35. 全市场 10 分钟 K 线（盘中快照聚合 + 收盘校准，2026-10-29）：新增 `minute_kline` 表存全市场 10 分钟 bar，只留 5 个交易日，作「5 天分时走势」只读观察层，不扩交易名单、不做高频交易。两条路组合：**B 盘中**——交易时段每分钟用新浪批量快照 `hq.sinajs.cn`（800 只/请求，全天约 1,680 请求）采全市场，本地聚合 10 分钟 bar（高低为分钟采样近似、量为累计量差分）；**A 收盘**——15:00 后用新浪 `CN_MarketDataService.getKLineData` `scale=10` 全市场拉真 10 分钟 OHLCV 校准当天并补历史（5,224 请求/天，3 并发约 5 分钟），同日 prune 到 5 个交易日。腾讯分钟 K 线两机 SSL 重置不可用；东财 `klt=1` 限流只作兜底。调度 launchd `ai.whaletrail-minute`（KeepAlive）；状态写 `results/minute-status.json`；失败才推 Telegram。代码：`whaletrail/data/sina_minute_source.py`、`scripts/fetch-minute.py`、`whaletrail/storage/schema.py`、`whaletrail/storage/repository.py`。
+
 ## 决策记录规范
 
 - 每个重大决策写一条，带日期；一句话说清"定了什么、为什么、影响哪里"。

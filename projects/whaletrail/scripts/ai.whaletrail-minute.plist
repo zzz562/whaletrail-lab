@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HTTPS_PROXY</key>
+		<string>http://127.0.0.1:7892</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>ai.whaletrail-minute</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail/.venv/bin/python3</string>
+		<string>-u</string>
+		<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail/scripts/fetch-minute.py</string>
+		<string>loop</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail/logs/minute.err</string>
+	<key>StandardOutPath</key>
+	<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail/logs/minute.log</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/zeph/Projects/whaletrail-lab/projects/whaletrail</string>
+</dict>
+</plist>

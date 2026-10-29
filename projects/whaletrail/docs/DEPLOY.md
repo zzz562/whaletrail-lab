@@ -50,6 +50,7 @@ ssh -L 8766:localhost:8766 -L 18789:localhost:18789 -L 11434:localhost:11434 mac
 | Label | 用途 |
 |-------|------|
 | `ai.whaletrail-live` | paper trading 实时扫描（仅美股交易时段，周末/节假日自动跳过）· Telegram 推送已停用（`WT_TG_PUSH=0`，2026-09-29）；扫描仍写 `results/paper_live_state.json` 供看板黄金 paper 页 |
+| `ai.whaletrail-minute` | A股全市场 10 分钟 K（盘中快照聚合 + 收盘校准 + 5 日 prune）· 日志 `logs/minute.log` / `minute.err` |
 | `ai.whaletrail-dashboard` | Streamlit 生产看板 `:8766`（worktree `~/Projects/whaletrail-prod`，不监视文件，KeepAlive） |
 | `ai.whaletrail-dashboard-stage` | Streamlit 预发看板 `:8768`（lab 工作区，公网 `/stage/`） |
 | `ai.openclaw.gateway` | OpenClaw AI Agent 网关 |
