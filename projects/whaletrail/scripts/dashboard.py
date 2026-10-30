@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """WhaleTrail Dashboard — read-only monitor.
 
-Pages: 黄金 paper / A股 paper / 相似选股 / 板块指数 / 炒股擂台.
+Pages: 黄金 paper / A股 paper / 相似选股 / 板块指数 / 炒股擂台 / 盘中.
 Bare / renders 相似选股. Other pages: /?page=gold|ashare|boards|arena.
 No tab bar — the query string is the only switch.
 """
@@ -1947,6 +1947,216 @@ def _arena_top_curves(conn, played: list[dict]) -> pd.DataFrame:
             frame.append({"日期": day, "收益": (last / 100000.0 - 1.0) * 100.0, "选手": label, "净值": last})
     return pd.DataFrame(frame)
 
+MINUTE_WATCH: list[str] = [
+    "sz.000338", "sh.600869", "sz.000823", "sz.301369", "sz.300672",
+    "sh.688359", "sh.601899", "sz.300748", "sz.300139", "sz.300981",
+    "sz.002490", "sz.300483", "sz.300164",
+]
+
+
+def _norm_code(raw: str) -> Optional[str]:
+    """Normalize a user-typed A-share code to ``sh./sz./bj.`` form."""
+    s = (raw or "").strip().lower()
+    if s.startswith(("sh.", "sz.", "bj.")) and len(s) == 9:
+        return s
+    try:
+        if ":" in s or s.endswith((".ss", ".sz", ".bj")):
+            return to_baostock_code(s)
+    except ValueError:
+        return None
+    if s.isdigit() and len(s) == 6:
+        if s[0] == "6":
+            return f"sh.{s}"
+        if s[0] in ("0", "3"):
+            return f"sz.{s}"
+        if s[0] in ("4", "8", "9"):
+            return f"bj.{s}"
+    return None
+
+
+def _code_names(codes: list[str]) -> dict[str, str]:
+    try:
+        repo = Repository(DB_PATH)
+        q = ",".join("?" for _ in codes)
+        rows = repo.conn.execute(
+            f"SELECT code, name FROM ashare_universe WHERE code IN ({q})", codes
+        ).fetchall()
+        repo.close()
+        return {r["code"]: r["name"] or "" for r in rows}
+    except Exception:
+        return {}
+
+
+def _load_minute_bars(code: str) -> pd.DataFrame:
+    try:
+        repo = Repository(DB_PATH)
+        df = pd.read_sql_query(
+            "SELECT trade_date, ts, open, high, low, close, volume, amount "
+            "FROM minute_kline WHERE code = ? ORDER BY ts",
+            repo.conn, params=[code],
+        )
+        repo.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_minute_market() -> dict[str, Any]:
+    """Whole-market 10-minute snapshot from ``minute_kline`` (last 2 sessions)."""
+    try:
+        repo = Repository(DB_PATH)
+        dates = pd.read_sql_query(
+            "SELECT DISTINCT trade_date FROM minute_kline ORDER BY trade_date DESC LIMIT 2",
+            repo.conn,
+        )["trade_date"].tolist()
+        if len(dates) < 2:
+            repo.close()
+            return {"available": False, "error": "分钟线不足两个交易日"}
+        today, prev = dates[0], dates[1]
+        df = pd.read_sql_query(
+            "SELECT code, trade_date, ts, close, amount FROM minute_kline "
+            "WHERE trade_date IN (?, ?)",
+            repo.conn, params=[today, prev],
+        )
+        latest_ts = str(df["ts"].max())
+        repo.close()
+
+        cur = (
+            df[df["trade_date"] == today]
+            .sort_values("ts")
+            .groupby("code", sort=False)
+            .tail(1)
+        )
+        last = (
+            df[df["trade_date"] == prev]
+            .sort_values("ts")
+            .groupby("code", sort=False)
+            .tail(1)[["code", "close"]]
+            .rename(columns={"close": "prev_close"})
+        )
+        merged = cur.merge(last, on="code", how="left")
+        amt_today = (
+            df[df["trade_date"] == today]
+            .groupby("code", sort=False)["amount"]
+            .sum()
+            .rename("amount_today")
+        )
+        merged = merged.merge(amt_today, on="code", how="left")
+        merged["pct"] = (merged["close"] / merged["prev_close"] - 1.0) * 100.0
+        up = int((merged["pct"] > 0).sum())
+        down = int((merged["pct"] < 0).sum())
+        flat = int((merged["pct"] == 0).sum())
+        amount = float(df[df["trade_date"] == today]["amount"].sum())
+        return {
+            "available": True,
+            "day": today,
+            "latest_ts": latest_ts,
+            "up": up,
+            "down": down,
+            "flat": flat,
+            "amount": amount,
+            "snap": merged,
+        }
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+
+
+def _minute_chart(bars: pd.DataFrame) -> alt.Chart:
+    plot = bars[["ts", "close"]].rename(columns={"ts": "时间", "close": "价格"})
+    line = (
+        alt.Chart(plot)
+        .mark_line(strokeWidth=1.2, color="#e6b450")
+        .encode(
+            x=alt.X("时间:T", title=None, axis=alt.Axis(format="%m-%d %H:%M")),
+            y=alt.Y("价格:Q", title=None, scale=alt.Scale(zero=False)),
+            tooltip=["时间:T", alt.Tooltip("价格:Q", format=".2f")],
+        )
+        .properties(height=220)
+    )
+    vol = bars[["ts", "volume"]].rename(columns={"ts": "时间", "volume": "量"})
+    vbars = (
+        alt.Chart(vol)
+        .mark_bar(size=3, color="#1e3a5f")
+        .encode(
+            x=alt.X("时间:T", title=None, axis=alt.Axis(format="%m-%d %H:%M")),
+            y=alt.Y("量:Q", title="量"),
+            tooltip=["时间:T", alt.Tooltip("量:Q", format=",.0f")],
+        )
+        .properties(height=70)
+    )
+    return alt.vconcat(line, vbars).resolve_scale(x="shared")
+
+
+def page_minute() -> None:
+    _page_header("盘中 · 10 分钟", "全市场 10 分钟 K · 保留 5 个交易日 · 只读观察")
+    _note("盘中每分钟用新浪批量快照聚合 10 分钟 bar，收盘后自动用新浪 kline 校准成真实 OHLCV。数字约每 10 分钟更新一次，仅观察，不作为进场依据。")
+
+    market = load_minute_market()
+    if not market.get("available"):
+        st.info(f"分钟线暂不可用：{market.get('error') or '无数据'}（先跑 fetch-minute.py 采集）")
+        return
+
+    st.caption(f"交易日 {market['day']} · 最新 bar {market['latest_ts']}")
+    _card_row([
+        {"label": "上涨", "value": f"{market['up']:,}", "accent": "#4ade80"},
+        {"label": "下跌", "value": f"{market['down']:,}", "accent": "#f87171"},
+        {"label": "平盘", "value": f"{market['flat']:,}", "accent": "#8b98a9"},
+        {"label": "今日成交额", "value": f"{market['amount'] / 1e8:,.0f} 亿", "accent": "#e6b450"},
+    ])
+
+    names = _code_names(MINUTE_WATCH)
+    opts = [f"{names.get(c, c)} {c}" for c in MINUTE_WATCH]
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        pick = st.selectbox("盯盘名单", opts, key="minute_pick")
+        pick_code = MINUTE_WATCH[opts.index(pick)]
+    with c2:
+        typed = st.text_input("或输入代码", placeholder="sh.600519 / 600519", key="minute_typed")
+    code = _norm_code(typed) if typed.strip() else pick_code
+    if not code:
+        st.warning("代码认不出来，请输入 sh.600519 或 600519 这种格式。")
+        return
+
+    snap = market["snap"]
+    row = snap[snap["code"] == code]
+    bars = _load_minute_bars(code)
+    if bars.empty:
+        st.info(f"{code} 没有分钟线（停牌或未入库）。")
+        return
+
+    today = bars[bars["trade_date"] == market["day"]]
+    prev_close = None
+    if not row.empty and pd.notna(row["prev_close"].iloc[0]):
+        prev_close = float(row["prev_close"].iloc[0])
+    last_close = float(bars["close"].iloc[-1])
+    pct = ((last_close / prev_close - 1.0) * 100.0) if prev_close else None
+    _card_row([
+        {"label": "最新价", "value": f"{last_close:,.2f}", "delta": (f"{pct:+.2f}%" if pct is not None else ""), "delta_color": _num_color(pct) if pct is not None else "", "accent": "#e6b450"},
+        {"label": "今开", "value": f"{today['open'].iloc[0]:,.2f}" if not today.empty else "—"},
+        {"label": "最高", "value": f"{today['high'].max():,.2f}" if not today.empty else "—", "accent": "#4ade80"},
+        {"label": "最低", "value": f"{today['low'].min():,.2f}" if not today.empty else "—", "accent": "#f87171"},
+        {"label": "今日成交额", "value": f"{today['amount'].sum() / 1e8:,.2f} 亿" if not today.empty else "—"},
+    ])
+
+    watch = snap[snap["code"].isin(MINUTE_WATCH)].copy()
+    watch["name"] = watch["code"].map(names)
+    view = pd.DataFrame({
+        "代码": watch["code"],
+        "名称": watch["name"],
+        "最新价": watch["close"].round(2),
+        "涨跌%": watch["pct"].round(2),
+        "成交额亿": (watch["amount_today"] / 1e8).round(2),
+    }).sort_values("涨跌%", ascending=False)
+    styled = _style_base(view.style.hide(axis="index")).format({
+        "最新价": "{:,.2f}", "涨跌%": "{:+.2f}", "成交额亿": "{:,.2f}",
+    }, na_rep="—")
+    styled = styled.map(_num_style, subset=["涨跌%"])
+    _show(styled, width="stretch")
+
+    _sec(f"{names.get(code, code)} · 5 天 10 分钟走势")
+    st.altair_chart(_alt_dark(_minute_chart(bars.tail(120))), width="stretch")
+
+
 def page_arena() -> None:
     try:
         from whaletrail.arena.ledger import connect
@@ -2302,7 +2512,7 @@ with tb1:
 with tb2:
     if st.button("刷新"):
         st.cache_data.clear(); st.rerun()
-# Deep links (same host): /?page=gold|ashare|similar|boards|arena
+# Deep links (same host): /?page=gold|ashare|similar|boards|arena|minute
 # Bare / is 相似选股. No tab bar.
 PAGE_DEFS: list[tuple[str, str, Any]] = [
     ("gold", "黄金 paper", page_gold_paper),
@@ -2310,6 +2520,7 @@ PAGE_DEFS: list[tuple[str, str, Any]] = [
     ("similar", "相似选股", page_similar),
     ("boards", "板块指数", page_boards),
     ("arena", "炒股擂台", page_arena),
+    ("minute", "盘中", page_minute),
 ]
 PAGE_FN = {k: fn for k, _, fn in PAGE_DEFS}
 
